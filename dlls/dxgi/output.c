@@ -659,7 +659,11 @@ static HRESULT STDMETHODCALLTYPE dxgi_output_CheckHardwareCompositionSupport(IDX
 {
     FIXME("iface %p, flags %p stub!\n", iface, flags);
 
-    return E_NOTIMPL;
+    if (!flags)
+        return E_INVALIDARG;
+
+    *flags = 0;
+    return S_OK;
 }
 
 static const struct IDXGIOutput6Vtbl dxgi_output_vtbl =
