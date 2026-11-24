@@ -25,6 +25,38 @@ This repository is a patched **Wine 11.22** tree containing compatibility and mo
 
 ---
 
+## Quick Install & Uninstall (Automated)
+
+To build Wine from this repository, download Paint.NET-on-Wine, configure a DXVK + Windows 11 prefix, install a `paintdotnet` launcher + desktop menu entry, and generate an uninstaller in one step:
+
+```bash
+./install-paintdotnet.sh
+```
+
+Common options:
+- `./install-paintdotnet.sh --theme light` — configure Windows 11 Light Mode instead of the default Dark Mode.
+- `./install-paintdotnet.sh --install-dir ~/opt/paintdotnet-wine --bin-dir ~/.local/bin` — customize install locations.
+- `./install-paintdotnet.sh --pdn-zip /path/to/portable.x64.wine.zip` — install from a local archive instead of fetching from GitHub Releases.
+- `./install-paintdotnet.sh --help` — list all options (`--skip-build`, `--keep-build`, `-j N`, `-y`).
+
+Once installed, run Paint.NET from the application menu or terminal:
+
+```bash
+paintdotnet [image-or-pdn-file]
+```
+
+To uninstall everything (launcher, `.desktop` entry, icon, built Wine, Paint.NET app, and Wine prefix):
+
+```bash
+paintdotnet-uninstall
+# or from this repository:
+./install-paintdotnet.sh uninstall
+```
+
+Pass `--keep-prefix` to preserve your Wine prefix settings when uninstalling.
+
+---
+
 ## 1. Prerequisites
 
 Install Wine's 64-bit build dependencies plus `clang`, `lld`, `winetricks`, `cabextract`, `curl`, and Vulkan drivers (including Mesa `lavapipe` / `vulkan-swrast` if you want a software GPU fallback):
