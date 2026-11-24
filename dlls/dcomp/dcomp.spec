@@ -11,6 +11,7 @@
 
 @ stub CompileEffectDescription
 @ stub CreateEffectDescription
+@ stdcall CreatePresentationFactory(ptr ptr ptr)
 @ stub DCompositionAttachMouseDragToHwnd
 @ stub DCompositionAttachMouseWheelToHwnd
 @ stdcall DCompositionBoostCompositorClock(long)

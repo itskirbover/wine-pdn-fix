@@ -52,6 +52,14 @@ HRESULT WINAPI DCompositionBoostCompositorClock( BOOL enable )
     return E_NOTIMPL;
 }
 
+HRESULT WINAPI CreatePresentationFactory( IUnknown *device, REFIID iid, void **factory )
+{
+    FIXME( "%p, %s, %p: stub!\n", device, debugstr_guid( iid ), factory );
+
+    if (factory) *factory = NULL;
+    return E_NOTIMPL;
+}
+
 /***********************************************************************
  *          Completed IAsyncAction for CompositorController
  */
