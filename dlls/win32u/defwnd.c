@@ -93,9 +93,11 @@ static void fill_solid_rect( HDC hdc, const RECT *rect, COLORREF color )
 
 static BOOL is_window_dark_mode( HWND hwnd )
 {
+    static const WCHAR propW[] =
+        {'W','i','n','e','D','w','m','I','m','m','e','r','s','i','v','e','D','a','r','k','M','o','d','e',0};
     char buffer[offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data[sizeof(DWORD)])];
     KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
-    HANDLE prop = NtUserGetProp( hwnd, L"WineDwmImmersiveDarkMode" );
+    HANDLE prop = NtUserGetProp( hwnd, propW );
     HKEY hkey;
     BOOL dark = FALSE;
 
@@ -104,7 +106,7 @@ static BOOL is_window_dark_mode( HWND hwnd )
 
     if ((hkey = reg_open_hkcu_key( "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" )))
     {
-        if (query_reg_value( hkey, L"AppsUseLightTheme", info, sizeof(buffer) ) == sizeof(DWORD)
+        if (query_reg_ascii_value( hkey, "AppsUseLightTheme", info, sizeof(buffer) ) == sizeof(DWORD)
                 && info->Type == REG_DWORD)
             dark = !*(const DWORD *)info->Data;
         NtClose( hkey );
