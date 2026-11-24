@@ -1,6 +1,9 @@
 MODULE    = dcomp.dll
+IMPORTS   = combase uuid
+IMPORTLIB = dcomp
 
 VER_PRODUCTVERSION = 10,0,14393,0
 
 SOURCES = \
+	classes.idl \
 	device.c
