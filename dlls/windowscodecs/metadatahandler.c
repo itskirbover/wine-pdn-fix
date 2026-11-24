@@ -1733,3 +1733,68 @@ HRESULT App1MetadataWriter_CreateInstance(REFIID iid, void **ppv)
 {
     return MetadataReader_Create(&App1MetadataWriter_Vtbl, iid, ppv);
 }
+
+HRESULT WINAPI WICSerializeMetadataContent(REFGUID format, IWICMetadataWriter *writer,
+        DWORD options, IStream *stream)
+{
+    IWICStreamProvider *provider = NULL;
+    IStream *src_stream = NULL;
+    LARGE_INTEGER pos;
+    ULARGE_INTEGER origin;
+    char buffer[1024];
+    ULONG read, written;
+    HRESULT hr;
+
+    TRACE("%s, %p, %#lx, %p.\n", debugstr_guid(format), writer, options, stream);
+
+    if (!format || !writer || !stream)
+        return E_INVALIDARG;
+
+    if (options)
+    {
+        FIXME("Unsupported options %#lx.\n", options);
+        return E_NOTIMPL;
+    }
+
+    if (FAILED(hr = IWICMetadataWriter_QueryInterface(writer, &IID_IWICStreamProvider, (void **)&provider)))
+    {
+        FIXME("Writer %p does not implement IWICStreamProvider, hr %#lx.\n", writer, hr);
+        return E_NOTIMPL;
+    }
+
+    hr = IWICStreamProvider_GetStream(provider, &src_stream);
+    IWICStreamProvider_Release(provider);
+    if (FAILED(hr))
+    {
+        FIXME("Failed to get cached stream from writer %p, hr %#lx.\n", writer, hr);
+        return E_NOTIMPL;
+    }
+
+    pos.QuadPart = 0;
+    if (FAILED(hr = IStream_Seek(src_stream, pos, STREAM_SEEK_CUR, &origin)))
+    {
+        IStream_Release(src_stream);
+        return hr;
+    }
+
+    while (SUCCEEDED(hr = IStream_Read(src_stream, buffer, sizeof(buffer), &read)) && read)
+    {
+        if (FAILED(hr = IStream_Write(stream, buffer, read, &written)))
+            break;
+
+        if (written != read)
+        {
+            WARN("Failed to write all bytes (%lu/%lu).\n", written, read);
+            hr = E_FAIL;
+            break;
+        }
+    }
+
+    if (SUCCEEDED(hr))
+        hr = S_OK;
+
+    pos.QuadPart = origin.QuadPart;
+    IStream_Seek(src_stream, pos, STREAM_SEEK_SET, NULL);
+    IStream_Release(src_stream);
+    return hr;
+}

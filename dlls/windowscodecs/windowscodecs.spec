@@ -114,5 +114,5 @@
 @ stdcall WICMapSchemaToName(ptr wstr long ptr ptr)
 @ stdcall WICMapShortNameToGuid(wstr ptr)
 @ stub WICMatchMetadataContent
-@ stub WICSerializeMetadataContent
+@ stdcall WICSerializeMetadataContent(ptr ptr long ptr)
 @ stdcall WICSetEncoderFormat_Proxy(ptr ptr ptr ptr)
