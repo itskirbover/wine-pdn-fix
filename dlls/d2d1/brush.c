@@ -20,21 +20,22 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(d2d);
 
-static inline struct d2d_gradient *impl_from_ID2D1GradientStopCollection(ID2D1GradientStopCollection *iface)
+static inline struct d2d_gradient *impl_from_ID2D1GradientStopCollection1(ID2D1GradientStopCollection1 *iface)
 {
-    return CONTAINING_RECORD(iface, struct d2d_gradient, ID2D1GradientStopCollection_iface);
+    return CONTAINING_RECORD(iface, struct d2d_gradient, ID2D1GradientStopCollection1_iface);
 }
 
-static HRESULT STDMETHODCALLTYPE d2d_gradient_QueryInterface(ID2D1GradientStopCollection *iface,
+static HRESULT STDMETHODCALLTYPE d2d_gradient_QueryInterface(ID2D1GradientStopCollection1 *iface,
         REFIID iid, void **out)
 {
     TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
 
-    if (IsEqualGUID(iid, &IID_ID2D1GradientStopCollection)
+    if (IsEqualGUID(iid, &IID_ID2D1GradientStopCollection1)
+            || IsEqualGUID(iid, &IID_ID2D1GradientStopCollection)
             || IsEqualGUID(iid, &IID_ID2D1Resource)
             || IsEqualGUID(iid, &IID_IUnknown))
     {
-        ID2D1GradientStopCollection_AddRef(iface);
+        ID2D1GradientStopCollection1_AddRef(iface);
         *out = iface;
         return S_OK;
     }
@@ -45,9 +46,9 @@ static HRESULT STDMETHODCALLTYPE d2d_gradient_QueryInterface(ID2D1GradientStopCo
     return E_NOINTERFACE;
 }
 
-static ULONG STDMETHODCALLTYPE d2d_gradient_AddRef(ID2D1GradientStopCollection *iface)
+static ULONG STDMETHODCALLTYPE d2d_gradient_AddRef(ID2D1GradientStopCollection1 *iface)
 {
-    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection(iface);
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
     ULONG refcount = InterlockedIncrement(&gradient->refcount);
 
     TRACE("%p increasing refcount to %lu.\n", iface, refcount);
@@ -55,9 +56,9 @@ static ULONG STDMETHODCALLTYPE d2d_gradient_AddRef(ID2D1GradientStopCollection *
     return refcount;
 }
 
-static ULONG STDMETHODCALLTYPE d2d_gradient_Release(ID2D1GradientStopCollection *iface)
+static ULONG STDMETHODCALLTYPE d2d_gradient_Release(ID2D1GradientStopCollection1 *iface)
 {
-    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection(iface);
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
     ULONG refcount = InterlockedDecrement(&gradient->refcount);
 
     TRACE("%p decreasing refcount to %lu.\n", iface, refcount);
@@ -73,49 +74,100 @@ static ULONG STDMETHODCALLTYPE d2d_gradient_Release(ID2D1GradientStopCollection 
     return refcount;
 }
 
-static void STDMETHODCALLTYPE d2d_gradient_GetFactory(ID2D1GradientStopCollection *iface, ID2D1Factory **factory)
+static void STDMETHODCALLTYPE d2d_gradient_GetFactory(ID2D1GradientStopCollection1 *iface, ID2D1Factory **factory)
 {
-    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection(iface);
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
 
     TRACE("iface %p, factory %p.\n", iface, factory);
 
     ID2D1Factory_AddRef(*factory = gradient->factory);
 }
 
-static UINT32 STDMETHODCALLTYPE d2d_gradient_GetGradientStopCount(ID2D1GradientStopCollection *iface)
+static UINT32 STDMETHODCALLTYPE d2d_gradient_GetGradientStopCount(ID2D1GradientStopCollection1 *iface)
 {
-    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection(iface);
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
 
     TRACE("iface %p.\n", iface);
 
     return gradient->stop_count;
 }
 
-static void STDMETHODCALLTYPE d2d_gradient_GetGradientStops(ID2D1GradientStopCollection *iface,
+static void STDMETHODCALLTYPE d2d_gradient_GetGradientStops(ID2D1GradientStopCollection1 *iface,
         D2D1_GRADIENT_STOP *stops, UINT32 stop_count)
 {
-    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection(iface);
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
 
     TRACE("iface %p, stops %p, stop_count %u.\n", iface, stops, stop_count);
 
     memcpy(stops, gradient->stops, min(gradient->stop_count, stop_count) * sizeof(*stops));
 }
 
-static D2D1_GAMMA STDMETHODCALLTYPE d2d_gradient_GetColorInterpolationGamma(ID2D1GradientStopCollection *iface)
+static D2D1_GAMMA STDMETHODCALLTYPE d2d_gradient_GetColorInterpolationGamma(ID2D1GradientStopCollection1 *iface)
 {
-    FIXME("iface %p stub!\n", iface);
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
 
-    return D2D1_GAMMA_1_0;
+    TRACE("iface %p.\n", iface);
+
+    return gradient->gamma;
 }
 
-static D2D1_EXTEND_MODE STDMETHODCALLTYPE d2d_gradient_GetExtendMode(ID2D1GradientStopCollection *iface)
+static D2D1_EXTEND_MODE STDMETHODCALLTYPE d2d_gradient_GetExtendMode(ID2D1GradientStopCollection1 *iface)
 {
-    FIXME("iface %p stub!\n", iface);
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
 
-    return D2D1_EXTEND_MODE_CLAMP;
+    TRACE("iface %p.\n", iface);
+
+    return gradient->extend_mode;
 }
 
-static const struct ID2D1GradientStopCollectionVtbl d2d_gradient_vtbl =
+static void STDMETHODCALLTYPE d2d_gradient_GetGradientStops1(ID2D1GradientStopCollection1 *iface,
+        D2D1_GRADIENT_STOP *stops, UINT32 stop_count)
+{
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
+
+    TRACE("iface %p, stops %p, stop_count %u.\n", iface, stops, stop_count);
+
+    memcpy(stops, gradient->stops, min(gradient->stop_count, stop_count) * sizeof(*stops));
+}
+
+static D2D1_COLOR_SPACE STDMETHODCALLTYPE d2d_gradient_GetPreInterpolationSpace(ID2D1GradientStopCollection1 *iface)
+{
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
+
+    TRACE("iface %p.\n", iface);
+
+    return gradient->preinterpolation_space;
+}
+
+static D2D1_COLOR_SPACE STDMETHODCALLTYPE d2d_gradient_GetPostInterpolationSpace(ID2D1GradientStopCollection1 *iface)
+{
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
+
+    TRACE("iface %p.\n", iface);
+
+    return gradient->postinterpolation_space;
+}
+
+static D2D1_BUFFER_PRECISION STDMETHODCALLTYPE d2d_gradient_GetBufferPrecision(ID2D1GradientStopCollection1 *iface)
+{
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
+
+    TRACE("iface %p.\n", iface);
+
+    return gradient->buffer_precision;
+}
+
+static D2D1_COLOR_INTERPOLATION_MODE STDMETHODCALLTYPE d2d_gradient_GetColorInterpolationMode(
+        ID2D1GradientStopCollection1 *iface)
+{
+    struct d2d_gradient *gradient = impl_from_ID2D1GradientStopCollection1(iface);
+
+    TRACE("iface %p.\n", iface);
+
+    return gradient->color_interpolation_mode;
+}
+
+static const struct ID2D1GradientStopCollection1Vtbl d2d_gradient_vtbl =
 {
     d2d_gradient_QueryInterface,
     d2d_gradient_AddRef,
@@ -125,10 +177,18 @@ static const struct ID2D1GradientStopCollectionVtbl d2d_gradient_vtbl =
     d2d_gradient_GetGradientStops,
     d2d_gradient_GetColorInterpolationGamma,
     d2d_gradient_GetExtendMode,
+    d2d_gradient_GetGradientStops1,
+    d2d_gradient_GetPreInterpolationSpace,
+    d2d_gradient_GetPostInterpolationSpace,
+    d2d_gradient_GetBufferPrecision,
+    d2d_gradient_GetColorInterpolationMode,
 };
 
-HRESULT d2d_gradient_create(ID2D1Factory *factory, ID3D11Device1 *device, const D2D1_GRADIENT_STOP *stops,
-        UINT32 stop_count, D2D1_GAMMA gamma, D2D1_EXTEND_MODE extend_mode, struct d2d_gradient **out)
+static HRESULT d2d_gradient_create_internal(ID2D1Factory *factory, ID3D11Device1 *device,
+        const D2D1_GRADIENT_STOP *stops, UINT32 stop_count, D2D1_GAMMA gamma,
+        D2D1_COLOR_SPACE preinterpolation_space, D2D1_COLOR_SPACE postinterpolation_space,
+        D2D1_BUFFER_PRECISION buffer_precision, D2D1_EXTEND_MODE extend_mode,
+        D2D1_COLOR_INTERPOLATION_MODE color_interpolation_mode, struct d2d_gradient **out)
 {
     D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc;
     D3D11_SUBRESOURCE_DATA buffer_data;
@@ -141,6 +201,9 @@ HRESULT d2d_gradient_create(ID2D1Factory *factory, ID3D11Device1 *device, const 
     HRESULT hr;
 
     *out = NULL;
+    if (!stops || !stop_count)
+        return E_INVALIDARG;
+
     if (!(data = calloc(stop_count, 2 * sizeof(*data))))
     {
         ERR("Failed to allocate data.\n");
@@ -198,10 +261,16 @@ HRESULT d2d_gradient_create(ID2D1Factory *factory, ID3D11Device1 *device, const 
     if (extend_mode != D2D1_EXTEND_MODE_CLAMP)
         FIXME("Ignoring extend mode %#x.\n", extend_mode);
 
-    gradient->ID2D1GradientStopCollection_iface.lpVtbl = &d2d_gradient_vtbl;
+    gradient->ID2D1GradientStopCollection1_iface.lpVtbl = &d2d_gradient_vtbl;
     gradient->refcount = 1;
     ID2D1Factory_AddRef(gradient->factory = factory);
     gradient->view = view;
+    gradient->gamma = gamma;
+    gradient->preinterpolation_space = preinterpolation_space;
+    gradient->postinterpolation_space = postinterpolation_space;
+    gradient->buffer_precision = buffer_precision;
+    gradient->extend_mode = extend_mode;
+    gradient->color_interpolation_mode = color_interpolation_mode;
 
     gradient->stop_count = stop_count;
     if (!(gradient->stops = calloc(stop_count, sizeof(*stops))))
@@ -218,12 +287,32 @@ HRESULT d2d_gradient_create(ID2D1Factory *factory, ID3D11Device1 *device, const 
     return S_OK;
 }
 
+HRESULT d2d_gradient_create(ID2D1Factory *factory, ID3D11Device1 *device, const D2D1_GRADIENT_STOP *stops,
+        UINT32 stop_count, D2D1_GAMMA gamma, D2D1_EXTEND_MODE extend_mode, struct d2d_gradient **out)
+{
+    D2D1_COLOR_SPACE space = (gamma == D2D1_GAMMA_1_0) ? D2D1_COLOR_SPACE_SCRGB : D2D1_COLOR_SPACE_SRGB;
+
+    return d2d_gradient_create_internal(factory, device, stops, stop_count, gamma, space, D2D1_COLOR_SPACE_SRGB,
+            D2D1_BUFFER_PRECISION_8BPC_UNORM, extend_mode, D2D1_COLOR_INTERPOLATION_MODE_STRAIGHT, out);
+}
+
+HRESULT d2d_gradient_create1(ID2D1Factory *factory, ID3D11Device1 *device, const D2D1_GRADIENT_STOP *stops,
+        UINT32 stop_count, D2D1_COLOR_SPACE preinterpolation_space, D2D1_COLOR_SPACE postinterpolation_space,
+        D2D1_BUFFER_PRECISION buffer_precision, D2D1_EXTEND_MODE extend_mode,
+        D2D1_COLOR_INTERPOLATION_MODE color_interpolation_mode, struct d2d_gradient **out)
+{
+    D2D1_GAMMA gamma = (preinterpolation_space == D2D1_COLOR_SPACE_SCRGB) ? D2D1_GAMMA_1_0 : D2D1_GAMMA_2_2;
+
+    return d2d_gradient_create_internal(factory, device, stops, stop_count, gamma, preinterpolation_space,
+            postinterpolation_space, buffer_precision, extend_mode, color_interpolation_mode, out);
+}
+
 static struct d2d_gradient *unsafe_impl_from_ID2D1GradientStopCollection(ID2D1GradientStopCollection *iface)
 {
     if (!iface)
         return NULL;
-    assert(iface->lpVtbl == &d2d_gradient_vtbl);
-    return CONTAINING_RECORD(iface, struct d2d_gradient, ID2D1GradientStopCollection_iface);
+    assert(iface->lpVtbl == (ID2D1GradientStopCollectionVtbl *)&d2d_gradient_vtbl);
+    return CONTAINING_RECORD(iface, struct d2d_gradient, ID2D1GradientStopCollection1_iface);
 }
 
 static void d2d_gradient_bind(struct d2d_gradient *gradient, ID3D11Device1 *device, unsigned int brush_idx)
@@ -446,7 +535,7 @@ static ULONG STDMETHODCALLTYPE d2d_linear_gradient_brush_Release(ID2D1LinearGrad
 
     if (!refcount)
     {
-        ID2D1GradientStopCollection_Release(&brush->u.linear.gradient->ID2D1GradientStopCollection_iface);
+        ID2D1GradientStopCollection1_Release(&brush->u.linear.gradient->ID2D1GradientStopCollection1_iface);
         d2d_brush_destroy(brush);
     }
 
@@ -550,7 +639,7 @@ static void STDMETHODCALLTYPE d2d_linear_gradient_brush_GetGradientStopCollectio
 
     TRACE("iface %p, gradient %p.\n", iface, gradient);
 
-    ID2D1GradientStopCollection_AddRef(*gradient = &brush->u.linear.gradient->ID2D1GradientStopCollection_iface);
+    ID2D1GradientStopCollection_AddRef(*gradient = (ID2D1GradientStopCollection *)&brush->u.linear.gradient->ID2D1GradientStopCollection1_iface);
 }
 
 static const struct ID2D1LinearGradientBrushVtbl d2d_linear_gradient_brush_vtbl =
@@ -580,7 +669,7 @@ HRESULT d2d_linear_gradient_brush_create(ID2D1Factory *factory,
     d2d_brush_init(*brush, factory, D2D_BRUSH_TYPE_LINEAR, brush_desc,
             (ID2D1BrushVtbl *)&d2d_linear_gradient_brush_vtbl);
     (*brush)->u.linear.gradient = unsafe_impl_from_ID2D1GradientStopCollection(gradient);
-    ID2D1GradientStopCollection_AddRef(&(*brush)->u.linear.gradient->ID2D1GradientStopCollection_iface);
+    ID2D1GradientStopCollection1_AddRef(&(*brush)->u.linear.gradient->ID2D1GradientStopCollection1_iface);
     (*brush)->u.linear.start = gradient_brush_desc->startPoint;
     (*brush)->u.linear.end = gradient_brush_desc->endPoint;
 
@@ -633,7 +722,7 @@ static ULONG STDMETHODCALLTYPE d2d_radial_gradient_brush_Release(ID2D1RadialGrad
 
     if (!refcount)
     {
-        ID2D1GradientStopCollection_Release(&brush->u.radial.gradient->ID2D1GradientStopCollection_iface);
+        ID2D1GradientStopCollection1_Release(&brush->u.radial.gradient->ID2D1GradientStopCollection1_iface);
         d2d_brush_destroy(brush);
     }
 
@@ -773,7 +862,7 @@ static void STDMETHODCALLTYPE d2d_radial_gradient_brush_GetGradientStopCollectio
 
     TRACE("iface %p, gradient %p.\n", iface, gradient);
 
-    ID2D1GradientStopCollection_AddRef(*gradient = &brush->u.radial.gradient->ID2D1GradientStopCollection_iface);
+    ID2D1GradientStopCollection_AddRef(*gradient = (ID2D1GradientStopCollection *)&brush->u.radial.gradient->ID2D1GradientStopCollection1_iface);
 }
 
 static const struct ID2D1RadialGradientBrushVtbl d2d_radial_gradient_brush_vtbl =
@@ -808,7 +897,7 @@ HRESULT d2d_radial_gradient_brush_create(ID2D1Factory *factory,
 
     d2d_brush_init(b, factory, D2D_BRUSH_TYPE_RADIAL, brush_desc, (ID2D1BrushVtbl *)&d2d_radial_gradient_brush_vtbl);
     b->u.radial.gradient = unsafe_impl_from_ID2D1GradientStopCollection(gradient);
-    ID2D1GradientStopCollection_AddRef(&b->u.radial.gradient->ID2D1GradientStopCollection_iface);
+    ID2D1GradientStopCollection1_AddRef(&b->u.radial.gradient->ID2D1GradientStopCollection1_iface);
     b->u.radial.centre = gradient_desc->center;
     b->u.radial.offset = gradient_desc->gradientOriginOffset;
     b->u.radial.radius.x = gradient_desc->radiusX;

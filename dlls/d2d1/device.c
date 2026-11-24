@@ -18,6 +18,7 @@
 
 #include "d2d1_private.h"
 #include <d3dcompiler.h>
+#include "wincodec.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(d2d);
 
@@ -478,7 +479,7 @@ static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateGradientStopCollection
 
     if (SUCCEEDED(hr = d2d_gradient_create(render_target->factory, render_target->d3d_device,
             stops, stop_count, gamma, extend_mode, &object)))
-        *gradient = &object->ID2D1GradientStopCollection_iface;
+        *gradient = (ID2D1GradientStopCollection *)&object->ID2D1GradientStopCollection1_iface;
 
     return hr;
 }
@@ -1279,6 +1280,34 @@ static void STDMETHODCALLTYPE d2d_device_context_DrawBitmap(ID2D1DeviceContext6 
         d2d_device_context_draw_bitmap(context, bitmap, dst_rect, opacity,
                 d2d1_1_interp_mode_from_d2d1(interpolation_mode), src_rect, NULL, NULL);
     }
+}
+
+static void d2d_device_context_draw_effect(struct d2d_device_context *context, ID2D1Effect *effect,
+        const D2D1_POINT_2F *target_offset, const D2D1_RECT_F *image_rect,
+        D2D1_INTERPOLATION_MODE interpolation_mode, D2D1_COMPOSITE_MODE composite_mode)
+{
+    unsigned int i, input_count;
+    ID2D1Image *input;
+
+    FIXME("Drawing first input image instead of effect %p (context %p, target_offset %s, image_rect %s, "
+            "interpolation_mode %#x, composite_mode %#x).\n",
+            effect, context, debug_d2d_point_2f(target_offset), debug_d2d_rect_f(image_rect),
+            interpolation_mode, composite_mode);
+
+    input_count = ID2D1Effect_GetInputCount(effect);
+    for (i = 0; i < input_count; ++i)
+    {
+        ID2D1Effect_GetInput(effect, i, &input);
+        if (!input)
+            continue;
+
+        ID2D1DeviceContext6_DrawImage(&context->ID2D1DeviceContext6_iface, input,
+                target_offset, image_rect, interpolation_mode, composite_mode);
+        ID2D1Image_Release(input);
+        return;
+    }
+
+    WARN("No input image to draw for effect %p.\n", effect);
 }
 
 static void STDMETHODCALLTYPE d2d_device_context_DrawText(ID2D1DeviceContext6 *iface,
@@ -2199,28 +2228,497 @@ static HRESULT STDMETHODCALLTYPE d2d_device_context_ID2D1DeviceContext_CreateBit
     return hr;
 }
 
+/* Compact ICC profiles from Compact-ICC-Profiles (CC0) */
+static const BYTE SRGB_ICC_COLOR_PROFILE[] =
+{
+    0x00, 0x00, 0x02, 0xe0, 0x6c, 0x63, 0x6d, 0x73, 0x02, 0x10, 0x00, 0x00, 0x6d, 0x6e, 0x74, 0x72,
+    0x52, 0x47, 0x42, 0x20, 0x58, 0x59, 0x5a, 0x20, 0x07, 0xe2, 0x00, 0x03, 0x00, 0x14, 0x00, 0x09,
+    0x00, 0x0e, 0x00, 0x1d, 0x61, 0x63, 0x73, 0x70, 0x4d, 0x53, 0x46, 0x54, 0x00, 0x00, 0x00, 0x00,
+    0x73, 0x61, 0x77, 0x73, 0x63, 0x74, 0x72, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf6, 0xd6, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0xd3, 0x2d,
+    0x68, 0x61, 0x6e, 0x64, 0x93, 0xb2, 0x34, 0xa9, 0x0e, 0xb0, 0x22, 0x8a, 0x98, 0xfd, 0x9a, 0xaf,
+    0xa3, 0x67, 0x89, 0x9b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x09, 0x64, 0x65, 0x73, 0x63, 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x5f,
+    0x63, 0x70, 0x72, 0x74, 0x00, 0x00, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x0c, 0x77, 0x74, 0x70, 0x74,
+    0x00, 0x00, 0x01, 0x18, 0x00, 0x00, 0x00, 0x14, 0x72, 0x58, 0x59, 0x5a, 0x00, 0x00, 0x01, 0x2c,
+    0x00, 0x00, 0x00, 0x14, 0x67, 0x58, 0x59, 0x5a, 0x00, 0x00, 0x01, 0x40, 0x00, 0x00, 0x00, 0x14,
+    0x62, 0x58, 0x59, 0x5a, 0x00, 0x00, 0x01, 0x54, 0x00, 0x00, 0x00, 0x14, 0x72, 0x54, 0x52, 0x43,
+    0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x01, 0x78, 0x67, 0x54, 0x52, 0x43, 0x00, 0x00, 0x01, 0x68,
+    0x00, 0x00, 0x01, 0x78, 0x62, 0x54, 0x52, 0x43, 0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x01, 0x78,
+    0x64, 0x65, 0x73, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x73, 0x52, 0x47, 0x42,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x65, 0x78, 0x74,
+    0x00, 0x00, 0x00, 0x00, 0x43, 0x43, 0x30, 0x00, 0x58, 0x59, 0x5a, 0x20, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xf3, 0x54, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x16, 0xc9, 0x58, 0x59, 0x5a, 0x20,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6f, 0xa0, 0x00, 0x00, 0x38, 0xf2, 0x00, 0x00, 0x03, 0x8f,
+    0x58, 0x59, 0x5a, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x62, 0x96, 0x00, 0x00, 0xb7, 0x89,
+    0x00, 0x00, 0x18, 0xda, 0x58, 0x59, 0x5a, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0xa0,
+    0x00, 0x00, 0x0f, 0x85, 0x00, 0x00, 0xb6, 0xc4, 0x63, 0x75, 0x72, 0x76, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0xb6, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x38, 0x00, 0x54, 0x00, 0x70, 0x00, 0x8c,
+    0x00, 0xa8, 0x00, 0xc4, 0x00, 0xe1, 0x01, 0x00, 0x01, 0x22, 0x01, 0x46, 0x01, 0x6d, 0x01, 0x95,
+    0x01, 0xc1, 0x01, 0xf0, 0x02, 0x20, 0x02, 0x55, 0x02, 0x8b, 0x02, 0xc4, 0x03, 0x01, 0x03, 0x3f,
+    0x03, 0x82, 0x03, 0xc6, 0x04, 0x0e, 0x04, 0x59, 0x04, 0xa7, 0x04, 0xf9, 0x05, 0x4c, 0x05, 0xa4,
+    0x05, 0xfe, 0x06, 0x5c, 0x06, 0xbe, 0x07, 0x21, 0x07, 0x8a, 0x07, 0xf4, 0x08, 0x63, 0x08, 0xd5,
+    0x09, 0x49, 0x09, 0xc3, 0x0a, 0x3f, 0x0a, 0xbf, 0x0b, 0x42, 0x0b, 0xc9, 0x0c, 0x54, 0x0c, 0xe1,
+    0x0d, 0x74, 0x0e, 0x09, 0x0e, 0xa2, 0x0f, 0x40, 0x0f, 0xe0, 0x10, 0x85, 0x11, 0x2d, 0x11, 0xda,
+    0x12, 0x8a, 0x13, 0x3e, 0x13, 0xf6, 0x14, 0xb2, 0x15, 0x71, 0x16, 0x36, 0x16, 0xfd, 0x17, 0xca,
+    0x18, 0x99, 0x19, 0x6e, 0x1a, 0x46, 0x1b, 0x22, 0x1c, 0x03, 0x1c, 0xe7, 0x1d, 0xd0, 0x1e, 0xbd,
+    0x1f, 0xae, 0x20, 0xa4, 0x21, 0x9e, 0x22, 0x9c, 0x23, 0x9f, 0x24, 0xa5, 0x25, 0xb1, 0x26, 0xc0,
+    0x27, 0xd5, 0x28, 0xed, 0x2a, 0x0a, 0x2b, 0x2b, 0x2c, 0x51, 0x2d, 0x7c, 0x2e, 0xaa, 0x2f, 0xde,
+    0x31, 0x16, 0x32, 0x52, 0x33, 0x94, 0x34, 0xd9, 0x36, 0x24, 0x37, 0x73, 0x38, 0xc6, 0x3a, 0x20,
+    0x3b, 0x7c, 0x3c, 0xdf, 0x3e, 0x45, 0x3f, 0xb0, 0x41, 0x21, 0x42, 0x96, 0x44, 0x10, 0x45, 0x8f,
+    0x47, 0x12, 0x48, 0x9b, 0x4a, 0x28, 0x4b, 0xbb, 0x4d, 0x51, 0x4e, 0xee, 0x50, 0x8f, 0x52, 0x35,
+    0x53, 0xe0, 0x55, 0x90, 0x57, 0x45, 0x59, 0x00, 0x5a, 0xbe, 0x5c, 0x84, 0x5e, 0x4c, 0x60, 0x1b,
+    0x61, 0xef, 0x63, 0xc7, 0x65, 0xa6, 0x67, 0x89, 0x69, 0x71, 0x6b, 0x5f, 0x6d, 0x51, 0x6f, 0x4a,
+    0x71, 0x46, 0x73, 0x4a, 0x75, 0x51, 0x77, 0x5e, 0x79, 0x71, 0x7b, 0x88, 0x7d, 0xa6, 0x7f, 0xc8,
+    0x81, 0xf0, 0x84, 0x1e, 0x86, 0x50, 0x88, 0x89, 0x8a, 0xc5, 0x8d, 0x09, 0x8f, 0x51, 0x91, 0x9f,
+    0x93, 0xf3, 0x96, 0x4b, 0x98, 0xab, 0x9b, 0x0e, 0x9d, 0x78, 0x9f, 0xe7, 0xa2, 0x5b, 0xa4, 0xd6,
+    0xa7, 0x56, 0xa9, 0xdb, 0xac, 0x67, 0xae, 0xf7, 0xb1, 0x8f, 0xb4, 0x2a, 0xb6, 0xcc, 0xb9, 0x74,
+    0xbc, 0x21, 0xbe, 0xd5, 0xc1, 0x8d, 0xc4, 0x4c, 0xc7, 0x10, 0xc9, 0xda, 0xcc, 0xab, 0xcf, 0x7f,
+    0xd2, 0x5c, 0xd5, 0x3d, 0xd8, 0x24, 0xdb, 0x12, 0xde, 0x04, 0xe0, 0xfe, 0xe3, 0xfc, 0xe7, 0x01,
+    0xea, 0x0c, 0xed, 0x1c, 0xf0, 0x34, 0xf3, 0x50, 0xf6, 0x73, 0xf9, 0x9b, 0xfc, 0xca, 0xff, 0xff
+};
+
+static const BYTE SCRGB_ICC_COLOR_PROFILE[] =
+{
+    0x00, 0x00, 0x01, 0x74, 0x6c, 0x63, 0x6d, 0x73, 0x02, 0x10, 0x00, 0x00, 0x6d, 0x6e, 0x74, 0x72,
+    0x52, 0x47, 0x42, 0x20, 0x58, 0x59, 0x5a, 0x20, 0x07, 0xe3, 0x00, 0x08, 0x00, 0x14, 0x00, 0x00,
+    0x00, 0x24, 0x00, 0x15, 0x61, 0x63, 0x73, 0x70, 0x4d, 0x53, 0x46, 0x54, 0x00, 0x00, 0x00, 0x00,
+    0x73, 0x61, 0x77, 0x73, 0x63, 0x74, 0x72, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf6, 0xd6, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0xd3, 0x2d,
+    0x68, 0x61, 0x6e, 0x64, 0xe1, 0x39, 0x4a, 0x55, 0xb0, 0x67, 0x35, 0xdb, 0xd1, 0x4c, 0xa7, 0x8c,
+    0x51, 0x02, 0x8c, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x09, 0x64, 0x65, 0x73, 0x63, 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x5f,
+    0x63, 0x70, 0x72, 0x74, 0x00, 0x00, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x0c, 0x77, 0x74, 0x70, 0x74,
+    0x00, 0x00, 0x01, 0x18, 0x00, 0x00, 0x00, 0x14, 0x72, 0x58, 0x59, 0x5a, 0x00, 0x00, 0x01, 0x2c,
+    0x00, 0x00, 0x00, 0x14, 0x67, 0x58, 0x59, 0x5a, 0x00, 0x00, 0x01, 0x40, 0x00, 0x00, 0x00, 0x14,
+    0x62, 0x58, 0x59, 0x5a, 0x00, 0x00, 0x01, 0x54, 0x00, 0x00, 0x00, 0x14, 0x72, 0x54, 0x52, 0x43,
+    0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x00, 0x0c, 0x67, 0x54, 0x52, 0x43, 0x00, 0x00, 0x01, 0x68,
+    0x00, 0x00, 0x00, 0x0c, 0x62, 0x54, 0x52, 0x43, 0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x00, 0x0c,
+    0x64, 0x65, 0x73, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x63, 0x52, 0x47, 0x42,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x65, 0x78, 0x74,
+    0x00, 0x00, 0x00, 0x00, 0x43, 0x43, 0x30, 0x00, 0x58, 0x59, 0x5a, 0x20, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xf3, 0x54, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x16, 0xc9, 0x58, 0x59, 0x5a, 0x20,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6f, 0xa0, 0x00, 0x00, 0x38, 0xf2, 0x00, 0x00, 0x03, 0x8f,
+    0x58, 0x59, 0x5a, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x62, 0x96, 0x00, 0x00, 0xb7, 0x89,
+    0x00, 0x00, 0x18, 0xda, 0x58, 0x59, 0x5a, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0xa0,
+    0x00, 0x00, 0x0f, 0x85, 0x00, 0x00, 0xb6, 0xc4, 0x63, 0x75, 0x72, 0x76, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00
+};
+
+static const BYTE ADOBE_RGB_ICC_COLOR_PROFILE[] =
+{
+    0x00, 0x00, 0x01, 0x76, 0x41, 0x44, 0x42, 0x45, 0x02, 0x10, 0x00, 0x00, 0x6d, 0x6e, 0x74, 0x72,
+    0x52, 0x47, 0x42, 0x20, 0x58, 0x59, 0x5a, 0x20, 0x07, 0xe2, 0x00, 0x03, 0x00, 0x14, 0x00, 0x09,
+    0x00, 0x0e, 0x00, 0x1d, 0x61, 0x63, 0x73, 0x70, 0x4d, 0x53, 0x46, 0x54, 0x00, 0x00, 0x00, 0x00,
+    0x73, 0x61, 0x77, 0x73, 0x63, 0x74, 0x72, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf6, 0xd6, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0xd3, 0x2d,
+    0x68, 0x61, 0x6e, 0x64, 0x5e, 0xc2, 0x19, 0xdb, 0xdb, 0x54, 0xcc, 0xc8, 0xde, 0x02, 0xbe, 0xc4,
+    0xeb, 0xe1, 0xb5, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x09, 0x64, 0x65, 0x73, 0x63, 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x5f,
+    0x63, 0x70, 0x72, 0x74, 0x00, 0x00, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x0c, 0x77, 0x74, 0x70, 0x74,
+    0x00, 0x00, 0x01, 0x18, 0x00, 0x00, 0x00, 0x14, 0x72, 0x58, 0x59, 0x5a, 0x00, 0x00, 0x01, 0x2c,
+    0x00, 0x00, 0x00, 0x14, 0x67, 0x58, 0x59, 0x5a, 0x00, 0x00, 0x01, 0x40, 0x00, 0x00, 0x00, 0x14,
+    0x62, 0x58, 0x59, 0x5a, 0x00, 0x00, 0x01, 0x54, 0x00, 0x00, 0x00, 0x14, 0x72, 0x54, 0x52, 0x43,
+    0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x00, 0x0e, 0x67, 0x54, 0x52, 0x43, 0x00, 0x00, 0x01, 0x68,
+    0x00, 0x00, 0x00, 0x0e, 0x62, 0x54, 0x52, 0x43, 0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x00, 0x0e,
+    0x64, 0x65, 0x73, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x41, 0x39, 0x38, 0x43,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x65, 0x78, 0x74,
+    0x00, 0x00, 0x00, 0x00, 0x43, 0x43, 0x30, 0x00, 0x58, 0x59, 0x5a, 0x20, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xf3, 0x51, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x16, 0xcc, 0x58, 0x59, 0x5a, 0x20,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9c, 0x18, 0x00, 0x00, 0x4f, 0xa5, 0x00, 0x00, 0x04, 0xfc,
+    0x58, 0x59, 0x5a, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x8d, 0x00, 0x00, 0xa0, 0x2c,
+    0x00, 0x00, 0x0f, 0x95, 0x58, 0x59, 0x5a, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x26, 0x31,
+    0x00, 0x00, 0x10, 0x2f, 0x00, 0x00, 0xbe, 0x9c, 0x63, 0x75, 0x72, 0x76, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01, 0x02, 0x33
+};
+
+struct d2d_color_context
+{
+    ID2D1ColorContext1 ID2D1ColorContext1_iface;
+    LONG refcount;
+
+    ID2D1Factory *factory;
+    D2D1_COLOR_CONTEXT_TYPE type;
+    D2D1_COLOR_SPACE space;
+    DXGI_COLOR_SPACE_TYPE dxgi_space;
+    D2D1_SIMPLE_COLOR_PROFILE simple_profile;
+    bool has_simple_profile;
+    const BYTE *profile;
+    UINT32 size;
+    bool owns_profile;
+};
+
+static inline struct d2d_color_context *impl_from_ID2D1ColorContext1(ID2D1ColorContext1 *iface)
+{
+    return CONTAINING_RECORD(iface, struct d2d_color_context, ID2D1ColorContext1_iface);
+}
+
+static HRESULT STDMETHODCALLTYPE d2d_color_context_QueryInterface(ID2D1ColorContext1 *iface, REFIID iid, void **out)
+{
+    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
+
+    if (IsEqualIID(iid, &IID_ID2D1ColorContext1)
+            || IsEqualIID(iid, &IID_ID2D1ColorContext)
+            || IsEqualIID(iid, &IID_ID2D1Resource)
+            || IsEqualIID(iid, &IID_IUnknown))
+    {
+        ID2D1ColorContext1_AddRef(iface);
+        *out = iface;
+        return S_OK;
+    }
+
+    WARN("%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid(iid));
+
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE d2d_color_context_AddRef(ID2D1ColorContext1 *iface)
+{
+    struct d2d_color_context *color_context = impl_from_ID2D1ColorContext1(iface);
+    ULONG refcount = InterlockedIncrement(&color_context->refcount);
+
+    TRACE("%p increasing refcount to %lu.\n", iface, refcount);
+
+    return refcount;
+}
+
+static ULONG STDMETHODCALLTYPE d2d_color_context_Release(ID2D1ColorContext1 *iface)
+{
+    struct d2d_color_context *color_context = impl_from_ID2D1ColorContext1(iface);
+    ULONG refcount = InterlockedDecrement(&color_context->refcount);
+
+    TRACE("%p decreasing refcount to %lu.\n", iface, refcount);
+
+    if (!refcount)
+    {
+        if (color_context->owns_profile)
+            free((void *)color_context->profile);
+        ID2D1Factory_Release(color_context->factory);
+        free(color_context);
+    }
+
+    return refcount;
+}
+
+static void STDMETHODCALLTYPE d2d_color_context_GetFactory(ID2D1ColorContext1 *iface, ID2D1Factory **factory)
+{
+    struct d2d_color_context *color_context = impl_from_ID2D1ColorContext1(iface);
+
+    TRACE("iface %p, factory %p.\n", iface, factory);
+
+    *factory = color_context->factory;
+    ID2D1Factory_AddRef(*factory);
+}
+
+static D2D1_COLOR_SPACE STDMETHODCALLTYPE d2d_color_context_GetColorSpace(ID2D1ColorContext1 *iface)
+{
+    struct d2d_color_context *color_context = impl_from_ID2D1ColorContext1(iface);
+
+    TRACE("iface %p.\n", iface);
+
+    return color_context->space;
+}
+
+static UINT32 STDMETHODCALLTYPE d2d_color_context_GetProfileSize(ID2D1ColorContext1 *iface)
+{
+    struct d2d_color_context *color_context = impl_from_ID2D1ColorContext1(iface);
+
+    TRACE("iface %p.\n", iface);
+
+    return color_context->size;
+}
+
+static HRESULT STDMETHODCALLTYPE d2d_color_context_GetProfile(ID2D1ColorContext1 *iface,
+        BYTE *profile, UINT32 profile_size)
+{
+    struct d2d_color_context *color_context = impl_from_ID2D1ColorContext1(iface);
+
+    TRACE("iface %p, profile %p, profile_size %u.\n", iface, profile, profile_size);
+
+    if (!color_context->profile || !color_context->size)
+        return D2DERR_INVALID_CALL;
+
+    if (!profile)
+        return E_INVALIDARG;
+
+    if (color_context->size > profile_size)
+    {
+        memset(profile, 0, profile_size);
+        return D2DERR_INSUFFICIENT_BUFFER;
+    }
+
+    memcpy(profile, color_context->profile, color_context->size);
+    return S_OK;
+}
+
+static D2D1_COLOR_CONTEXT_TYPE STDMETHODCALLTYPE d2d_color_context_GetColorContextType(ID2D1ColorContext1 *iface)
+{
+    struct d2d_color_context *color_context = impl_from_ID2D1ColorContext1(iface);
+
+    TRACE("iface %p.\n", iface);
+
+    return color_context->type;
+}
+
+static DXGI_COLOR_SPACE_TYPE STDMETHODCALLTYPE d2d_color_context_GetDXGIColorSpace(ID2D1ColorContext1 *iface)
+{
+    struct d2d_color_context *color_context = impl_from_ID2D1ColorContext1(iface);
+
+    TRACE("iface %p.\n", iface);
+
+    return color_context->dxgi_space;
+}
+
+static HRESULT STDMETHODCALLTYPE d2d_color_context_GetSimpleColorProfile(ID2D1ColorContext1 *iface,
+        D2D1_SIMPLE_COLOR_PROFILE *simple_profile)
+{
+    struct d2d_color_context *color_context = impl_from_ID2D1ColorContext1(iface);
+
+    TRACE("iface %p, simple_profile %p.\n", iface, simple_profile);
+
+    if (!simple_profile)
+        return E_INVALIDARG;
+
+    if (!color_context->has_simple_profile)
+    {
+        FIXME("Unsupported color context type %#x.\n", color_context->type);
+        return D2DERR_INVALID_CALL;
+    }
+
+    *simple_profile = color_context->simple_profile;
+    return S_OK;
+}
+
+static const struct ID2D1ColorContext1Vtbl d2d_color_context_vtbl =
+{
+    d2d_color_context_QueryInterface,
+    d2d_color_context_AddRef,
+    d2d_color_context_Release,
+    d2d_color_context_GetFactory,
+    d2d_color_context_GetColorSpace,
+    d2d_color_context_GetProfileSize,
+    d2d_color_context_GetProfile,
+    d2d_color_context_GetColorContextType,
+    d2d_color_context_GetDXGIColorSpace,
+    d2d_color_context_GetSimpleColorProfile,
+};
+
+static void d2d_set_srgb_simple_profile(D2D1_SIMPLE_COLOR_PROFILE *profile, D2D1_GAMMA1 gamma)
+{
+    profile->redPrimary.x = 0.64f;
+    profile->redPrimary.y = 0.33f;
+    profile->greenPrimary.x = 0.30f;
+    profile->greenPrimary.y = 0.60f;
+    profile->bluePrimary.x = 0.15f;
+    profile->bluePrimary.y = 0.06f;
+    profile->whitePointXZ.x = 0.95047f;
+    profile->whitePointXZ.y = 1.08883f;
+    profile->gamma = gamma;
+}
+
+static HRESULT d2d_color_context_create_icc(ID2D1Factory *factory, D2D1_COLOR_SPACE space,
+        const BYTE *profile, UINT32 profile_size, bool copy_profile, ID2D1ColorContext1 **out)
+{
+    struct d2d_color_context *color_context;
+
+    if (!out)
+        return E_INVALIDARG;
+
+    if (!(color_context = calloc(1, sizeof(*color_context))))
+        return E_OUTOFMEMORY;
+
+    color_context->ID2D1ColorContext1_iface.lpVtbl = &d2d_color_context_vtbl;
+    color_context->refcount = 1;
+    color_context->type = D2D1_COLOR_CONTEXT_TYPE_ICC;
+    color_context->space = space;
+
+    if (space == D2D1_COLOR_SPACE_SRGB)
+    {
+        color_context->size = sizeof(SRGB_ICC_COLOR_PROFILE);
+        color_context->profile = SRGB_ICC_COLOR_PROFILE;
+        color_context->dxgi_space = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+        d2d_set_srgb_simple_profile(&color_context->simple_profile, D2D1_GAMMA1_G22);
+        color_context->has_simple_profile = true;
+    }
+    else if (space == D2D1_COLOR_SPACE_SCRGB)
+    {
+        color_context->size = sizeof(SCRGB_ICC_COLOR_PROFILE);
+        color_context->profile = SCRGB_ICC_COLOR_PROFILE;
+        color_context->dxgi_space = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+        d2d_set_srgb_simple_profile(&color_context->simple_profile, D2D1_GAMMA1_G10);
+        color_context->has_simple_profile = true;
+    }
+    else
+    {
+        if (!profile || !profile_size)
+        {
+            free(color_context);
+            return E_INVALIDARG;
+        }
+        color_context->size = profile_size;
+        if (copy_profile)
+        {
+            BYTE *buf;
+            if (!(buf = malloc(profile_size)))
+            {
+                free(color_context);
+                return E_OUTOFMEMORY;
+            }
+            memcpy(buf, profile, profile_size);
+            color_context->profile = buf;
+            color_context->owns_profile = true;
+        }
+        else
+        {
+            color_context->profile = profile;
+        }
+        color_context->dxgi_space = DXGI_COLOR_SPACE_CUSTOM;
+    }
+
+    color_context->factory = factory;
+    ID2D1Factory_AddRef(factory);
+
+    *out = &color_context->ID2D1ColorContext1_iface;
+    return S_OK;
+}
+
 static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateColorContext(ID2D1DeviceContext6 *iface,
         D2D1_COLOR_SPACE space, const BYTE *profile, UINT32 profile_size, ID2D1ColorContext **color_context)
 {
-    FIXME("iface %p, space %#x, profile %p, profile_size %u, color_context %p stub!\n",
+    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
+    ID2D1ColorContext1 *object;
+    HRESULT hr;
+
+    TRACE("iface %p, space %#x, profile %p, profile_size %u, color_context %p.\n",
             iface, space, profile, profile_size, color_context);
 
-    return E_NOTIMPL;
+    if (!color_context)
+        return E_INVALIDARG;
+    *color_context = NULL;
+
+    if (space != D2D1_COLOR_SPACE_SRGB && space != D2D1_COLOR_SPACE_SCRGB
+            && space != D2D1_COLOR_SPACE_CUSTOM)
+    {
+        FIXME("Unhandled color space %u.\n", space);
+        return E_INVALIDARG;
+    }
+
+    if (SUCCEEDED(hr = d2d_color_context_create_icc(context->factory, space,
+            profile, profile_size, true, &object)))
+        *color_context = (ID2D1ColorContext *)object;
+
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateColorContextFromFilename(ID2D1DeviceContext6 *iface,
         const WCHAR *filename, ID2D1ColorContext **color_context)
 {
-    FIXME("iface %p, filename %s, color_context %p stub!\n", iface, debugstr_w(filename), color_context);
+    LARGE_INTEGER file_size;
+    DWORD bytes_read;
+    HANDLE file;
+    BYTE *buf;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("iface %p, filename %s, color_context %p.\n", iface, debugstr_w(filename), color_context);
+
+    if (!filename || !color_context)
+        return E_INVALIDARG;
+    *color_context = NULL;
+
+    file = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE)
+        return HRESULT_FROM_WIN32(GetLastError());
+
+    if (!GetFileSizeEx(file, &file_size) || file_size.QuadPart <= 0 || file_size.QuadPart > 64 * 1024 * 1024)
+    {
+        CloseHandle(file);
+        return file_size.QuadPart <= 0 ? E_INVALIDARG : HRESULT_FROM_WIN32(ERROR_BAD_LENGTH);
+    }
+
+    if (!(buf = malloc(file_size.LowPart)))
+    {
+        CloseHandle(file);
+        return E_OUTOFMEMORY;
+    }
+
+    if (!ReadFile(file, buf, file_size.LowPart, &bytes_read, NULL) || bytes_read != file_size.LowPart)
+        hr = HRESULT_FROM_WIN32(GetLastError());
+    else
+        hr = d2d_device_context_CreateColorContext(iface, D2D1_COLOR_SPACE_CUSTOM, buf, bytes_read, color_context);
+
+    free(buf);
+    CloseHandle(file);
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateColorContextFromWicColorContext(ID2D1DeviceContext6 *iface,
         IWICColorContext *wic_color_context, ID2D1ColorContext **color_context)
 {
-    FIXME("iface %p, wic_color_context %p, color_context %p stub!\n", iface, wic_color_context, color_context);
+    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
+    ID2D1ColorContext1 *object;
+    WICColorContextType type;
+    UINT size, exif_color;
+    BYTE *buffer;
+    HRESULT hr;
 
+    TRACE("iface %p, wic_color_context %p, color_context %p.\n", iface, wic_color_context, color_context);
+
+    if (!wic_color_context || !color_context)
+        return E_INVALIDARG;
+    *color_context = NULL;
+
+    if (FAILED(hr = IWICColorContext_GetType(wic_color_context, &type)))
+        return hr;
+
+    if (type == WICColorContextUninitialized)
+        return E_INVALIDARG;
+
+    if (type == WICColorContextProfile)
+    {
+        if (FAILED(hr = IWICColorContext_GetProfileBytes(wic_color_context, 0, NULL, &size)))
+            return hr;
+        if (!size)
+            return E_INVALIDARG;
+
+        if (!(buffer = malloc(size)))
+            return E_OUTOFMEMORY;
+
+        if (FAILED(hr = IWICColorContext_GetProfileBytes(wic_color_context, size, buffer, &size)))
+        {
+            free(buffer);
+            return hr;
+        }
+
+        hr = d2d_device_context_CreateColorContext(iface, D2D1_COLOR_SPACE_CUSTOM, buffer, size, color_context);
+        free(buffer);
+        return hr;
+    }
+
+    if (type == WICColorContextExifColorSpace)
+    {
+        if (FAILED(hr = IWICColorContext_GetExifColorSpace(wic_color_context, &exif_color)))
+            return hr;
+
+        if (exif_color == 1)
+            return d2d_device_context_CreateColorContext(iface, D2D1_COLOR_SPACE_SRGB, NULL, 0, color_context);
+
+        if (exif_color == 2)
+        {
+            if (SUCCEEDED(hr = d2d_color_context_create_icc(context->factory, D2D1_COLOR_SPACE_CUSTOM,
+                    ADOBE_RGB_ICC_COLOR_PROFILE, sizeof(ADOBE_RGB_ICC_COLOR_PROFILE), false, &object)))
+                *color_context = (ID2D1ColorContext *)object;
+            return hr;
+        }
+
+        FIXME("Unknown EXIF color space %u.\n", exif_color);
+        return E_NOTIMPL;
+    }
+
+    FIXME("Unknown WIC color context type %u.\n", type);
     return E_NOTIMPL;
 }
 
@@ -2325,12 +2823,24 @@ static HRESULT STDMETHODCALLTYPE d2d_device_context_ID2D1DeviceContext_CreateGra
         D2D1_BUFFER_PRECISION buffer_precision, D2D1_EXTEND_MODE extend_mode,
         D2D1_COLOR_INTERPOLATION_MODE color_interpolation_mode, ID2D1GradientStopCollection1 **gradient)
 {
-    FIXME("iface %p, stops %p, stop_count %u, preinterpolation_space %#x, postinterpolation_space %#x, "
-            "buffer_precision %#x, extend_mode %#x, color_interpolation_mode %#x, gradient %p stub!\n",
+    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
+    struct d2d_gradient *object;
+    HRESULT hr;
+
+    TRACE("iface %p, stops %p, stop_count %u, preinterpolation_space %#x, postinterpolation_space %#x, "
+            "buffer_precision %#x, extend_mode %#x, color_interpolation_mode %#x, gradient %p.\n",
             iface, stops, stop_count, preinterpolation_space, postinterpolation_space,
             buffer_precision, extend_mode, color_interpolation_mode, gradient);
 
-    return E_NOTIMPL;
+    if (!gradient)
+        return E_INVALIDARG;
+
+    if (SUCCEEDED(hr = d2d_gradient_create1(context->factory, context->d3d_device, stops, stop_count,
+            preinterpolation_space, postinterpolation_space, buffer_precision, extend_mode,
+            color_interpolation_mode, &object)))
+        *gradient = &object->ID2D1GradientStopCollection1_iface;
+
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateImageBrush(ID2D1DeviceContext6 *iface,
@@ -2385,9 +2895,44 @@ static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateCommandList(ID2D1Devic
 
 static BOOL STDMETHODCALLTYPE d2d_device_context_IsDxgiFormatSupported(ID2D1DeviceContext6 *iface, DXGI_FORMAT format)
 {
-    FIXME("iface %p, format %#x stub!\n", iface, format);
+    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
+    UINT support = 0;
+    HRESULT hr;
 
-    return FALSE;
+    TRACE("iface %p, format %#x.\n", iface, format);
+
+    switch (format)
+    {
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_R16G16B16A16_UNORM:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+        case DXGI_FORMAT_R11G11B10_FLOAT:
+        case DXGI_FORMAT_A8_UNORM:
+        case DXGI_FORMAT_R8_UNORM:
+        case DXGI_FORMAT_R8G8_UNORM:
+        case DXGI_FORMAT_R16_UNORM:
+        case DXGI_FORMAT_R16_FLOAT:
+        case DXGI_FORMAT_R16G16_UNORM:
+        case DXGI_FORMAT_R16G16_FLOAT:
+        case DXGI_FORMAT_R32_FLOAT:
+        case DXGI_FORMAT_R32G32_FLOAT:
+            break;
+        default:
+            return FALSE;
+    }
+
+    if (FAILED(hr = ID3D11Device1_CheckFormatSupport(context->d3d_device, format, &support)))
+        WARN("Format support check failed, hr %#lx.\n", hr);
+
+    return (support & (D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE))
+            == (D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE);
 }
 
 static BOOL STDMETHODCALLTYPE d2d_device_context_IsBufferPrecisionSupported(ID2D1DeviceContext6 *iface,
@@ -2426,9 +2971,13 @@ static HRESULT STDMETHODCALLTYPE d2d_device_context_GetImageLocalBounds(ID2D1Dev
     struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
     D2D_SIZE_U pixel_size;
     ID2D1Bitmap *bitmap;
+    ID2D1Effect *effect;
     D2D_SIZE_F size;
 
     TRACE("iface %p, image %p, local_bounds %p.\n", iface, image, local_bounds);
+
+    if (!image || !local_bounds)
+        return E_INVALIDARG;
 
     if (SUCCEEDED(ID2D1Image_QueryInterface(image, &IID_ID2D1Bitmap, (void **)&bitmap)))
     {
@@ -2456,12 +3005,54 @@ static HRESULT STDMETHODCALLTYPE d2d_device_context_GetImageLocalBounds(ID2D1Dev
 
         return S_OK;
     }
-    else
-    {
-        FIXME("Unable to get local bounds of image %p.\n", image);
 
-        return E_NOTIMPL;
+    if (SUCCEEDED(ID2D1Image_QueryInterface(image, &IID_ID2D1Effect, (void **)&effect)))
+    {
+        unsigned int i, input_count;
+        D2D1_RECT_F input_bounds;
+        bool has_bounds = false;
+        ID2D1Image *input;
+        HRESULT hr;
+
+        FIXME("Approximating local bounds of effect %p from its inputs.\n", effect);
+
+        memset(local_bounds, 0, sizeof(*local_bounds));
+        input_count = ID2D1Effect_GetInputCount(effect);
+        for (i = 0; i < input_count; ++i)
+        {
+            ID2D1Effect_GetInput(effect, i, &input);
+            if (!input)
+                continue;
+
+            hr = d2d_device_context_GetImageLocalBounds(iface, input, &input_bounds);
+            ID2D1Image_Release(input);
+            if (FAILED(hr))
+            {
+                WARN("Failed to get local bounds of effect input %u, hr %#lx.\n", i, hr);
+                continue;
+            }
+
+            if (!has_bounds)
+            {
+                *local_bounds = input_bounds;
+                has_bounds = true;
+            }
+            else
+            {
+                local_bounds->left = min(local_bounds->left, input_bounds.left);
+                local_bounds->top = min(local_bounds->top, input_bounds.top);
+                local_bounds->right = max(local_bounds->right, input_bounds.right);
+                local_bounds->bottom = max(local_bounds->bottom, input_bounds.bottom);
+            }
+        }
+
+        ID2D1Effect_Release(effect);
+        return S_OK;
     }
+
+    FIXME("Unable to get local bounds of image %p.\n", image);
+
+    return E_NOTIMPL;
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_device_context_GetImageWorldBounds(ID2D1DeviceContext6 *iface,
@@ -2749,6 +3340,44 @@ static void STDMETHODCALLTYPE d2d_device_context_DrawImage(ID2D1DeviceContext6 *
 
         ID2D1Bitmap_Release(bitmap);
         return;
+    }
+    else
+    {
+        ID2D1CommandList *command_list;
+        ID2D1Effect *effect;
+
+        if (SUCCEEDED(ID2D1Image_QueryInterface(image, &IID_ID2D1Effect, (void **)&effect)))
+        {
+            d2d_device_context_draw_effect(context, effect, target_offset, image_rect,
+                    interpolation_mode, composite_mode);
+            ID2D1Effect_Release(effect);
+            return;
+        }
+
+        if (SUCCEEDED(ID2D1Image_QueryInterface(image, &IID_ID2D1CommandList, (void **)&command_list)))
+        {
+            D2D1_MATRIX_3X2_F saved_transform = context->drawing_state.transform;
+
+            if (target_offset && (target_offset->x != 0.0f || target_offset->y != 0.0f))
+            {
+                D2D1_MATRIX_3X2_F transform =
+                {
+                    ._11 = 1.0f, ._12 = 0.0f,
+                    ._21 = 0.0f, ._22 = 1.0f,
+                    ._31 = target_offset->x, ._32 = target_offset->y,
+                };
+                d2d_matrix_multiply(&transform, &saved_transform);
+                context->drawing_state.transform = transform;
+            }
+            if (image_rect)
+                FIXME("Ignoring image_rect %s when drawing command list %p.\n",
+                        debug_d2d_rect_f(image_rect), command_list);
+
+            d2d_command_list_draw(command_list, context);
+            context->drawing_state.transform = saved_transform;
+            ID2D1CommandList_Release(command_list);
+            return;
+        }
     }
 
     FIXME("Unhandled image %p.\n", image);
@@ -3175,19 +3804,98 @@ static void STDMETHODCALLTYPE d2d_device_context_DrawSvgDocument(ID2D1DeviceCont
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateColorContextFromDxgiColorSpace(
-        ID2D1DeviceContext6 *iface, DXGI_COLOR_SPACE_TYPE color_space, ID2D1ColorContext1 **color_context)
+        ID2D1DeviceContext6 *iface, DXGI_COLOR_SPACE_TYPE dxgi_color_space, ID2D1ColorContext1 **color_context)
 {
-    FIXME("iface %p, color_space %u, color_context %p stub!\n", iface, color_space, color_context);
+    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
+    struct d2d_color_context *object;
 
-    return E_NOTIMPL;
+    TRACE("iface %p, color_space %u, color_context %p.\n", iface, dxgi_color_space, color_context);
+
+    if (!color_context)
+        return E_INVALIDARG;
+    *color_context = NULL;
+
+    if (dxgi_color_space == DXGI_COLOR_SPACE_RESERVED || dxgi_color_space == DXGI_COLOR_SPACE_CUSTOM)
+        return E_INVALIDARG;
+
+    if (!(object = calloc(1, sizeof(*object))))
+        return E_OUTOFMEMORY;
+
+    object->ID2D1ColorContext1_iface.lpVtbl = &d2d_color_context_vtbl;
+    object->refcount = 1;
+    object->type = D2D1_COLOR_CONTEXT_TYPE_DXGI;
+    object->dxgi_space = dxgi_color_space;
+    object->space = D2D1_COLOR_SPACE_CUSTOM;
+
+    switch (dxgi_color_space)
+    {
+        case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
+            object->space = D2D1_COLOR_SPACE_SRGB;
+            object->profile = SRGB_ICC_COLOR_PROFILE;
+            object->size = sizeof(SRGB_ICC_COLOR_PROFILE);
+            d2d_set_srgb_simple_profile(&object->simple_profile, D2D1_GAMMA1_G22);
+            object->has_simple_profile = true;
+            break;
+        case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
+            object->space = D2D1_COLOR_SPACE_SCRGB;
+            object->profile = SCRGB_ICC_COLOR_PROFILE;
+            object->size = sizeof(SCRGB_ICC_COLOR_PROFILE);
+            d2d_set_srgb_simple_profile(&object->simple_profile, D2D1_GAMMA1_G10);
+            object->has_simple_profile = true;
+            break;
+        case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020:
+        case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+            object->simple_profile.redPrimary.x = 0.708f;
+            object->simple_profile.redPrimary.y = 0.292f;
+            object->simple_profile.greenPrimary.x = 0.170f;
+            object->simple_profile.greenPrimary.y = 0.797f;
+            object->simple_profile.bluePrimary.x = 0.131f;
+            object->simple_profile.bluePrimary.y = 0.046f;
+            object->simple_profile.whitePointXZ.x = 0.95047f;
+            object->simple_profile.whitePointXZ.y = 1.08883f;
+            object->simple_profile.gamma = dxgi_color_space == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+                    ? D2D1_GAMMA1_G2084 : D2D1_GAMMA1_G22;
+            object->has_simple_profile = true;
+            break;
+        default:
+            FIXME("Unhandled DXGI color space %u.\n", dxgi_color_space);
+            break;
+    }
+
+    object->factory = context->factory;
+    ID2D1Factory_AddRef(object->factory);
+
+    *color_context = &object->ID2D1ColorContext1_iface;
+    return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateColorContextFromSimpleColorProfile(
         ID2D1DeviceContext6 *iface, const D2D1_SIMPLE_COLOR_PROFILE *simple_profile, ID2D1ColorContext1 **color_context)
 {
-    FIXME("iface %p, simple_profile %p, color_context %p stub!\n", iface, simple_profile, color_context);
+    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
+    struct d2d_color_context *object;
 
-    return E_NOTIMPL;
+    TRACE("iface %p, simple_profile %p, color_context %p.\n", iface, simple_profile, color_context);
+
+    if (!simple_profile || !color_context)
+        return E_INVALIDARG;
+    *color_context = NULL;
+
+    if (!(object = calloc(1, sizeof(*object))))
+        return E_OUTOFMEMORY;
+
+    object->ID2D1ColorContext1_iface.lpVtbl = &d2d_color_context_vtbl;
+    object->refcount = 1;
+    object->type = D2D1_COLOR_CONTEXT_TYPE_SIMPLE;
+    object->space = D2D1_COLOR_SPACE_CUSTOM;
+    object->dxgi_space = DXGI_COLOR_SPACE_CUSTOM;
+    object->simple_profile = *simple_profile;
+    object->has_simple_profile = true;
+    object->factory = context->factory;
+    ID2D1Factory_AddRef(object->factory);
+
+    *color_context = &object->ID2D1ColorContext1_iface;
+    return S_OK;
 }
 
 static void STDMETHODCALLTYPE d2d_device_context_BlendImage(ID2D1DeviceContext6 *iface, ID2D1Image *image,

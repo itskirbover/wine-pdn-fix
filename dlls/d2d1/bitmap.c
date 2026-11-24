@@ -85,6 +85,8 @@ static ULONG STDMETHODCALLTYPE d2d_bitmap_Release(ID2D1Bitmap1 *iface)
 
     if (!refcount)
     {
+        if (bitmap->wic_lock)
+            IWICBitmapLock_Release(bitmap->wic_lock);
         if (bitmap->srv)
             ID3D11ShaderResourceView_Release(bitmap->srv);
         if (bitmap->rtv)
@@ -679,25 +681,17 @@ HRESULT d2d_bitmap_create_shared(struct d2d_device_context *context, REFIID iid,
         return S_OK;
     }
 
+    if (IsEqualGUID(iid, &IID_IWICBitmapLock))
+        return d2d_bitmap_create_from_wic_bitmap_lock(context, data, desc, bitmap);
+
     WARN("Unhandled interface %s.\n", debugstr_guid(iid));
 
     return E_INVALIDARG;
 }
 
-HRESULT d2d_bitmap_create_from_wic_bitmap(struct d2d_device_context *context, IWICBitmapSource *bitmap_source,
-        const D2D1_BITMAP_PROPERTIES1 *desc, struct d2d_bitmap **bitmap)
+static HRESULT d2d_wic_format_to_d2d(const WICPixelFormatGUID *wic_format, D2D1_PIXEL_FORMAT *pixel_format,
+        unsigned int *bpp)
 {
-    const D2D1_PIXEL_FORMAT *d2d_format;
-    D2D1_BITMAP_PROPERTIES1 bitmap_desc;
-    WICPixelFormatGUID wic_format;
-    unsigned int bpp, data_size;
-    D2D1_SIZE_U size;
-    unsigned int i;
-    WICRect rect;
-    UINT32 pitch;
-    HRESULT hr;
-    void *data;
-
     static const struct
     {
         const WICPixelFormatGUID *wic;
@@ -705,41 +699,21 @@ HRESULT d2d_bitmap_create_from_wic_bitmap(struct d2d_device_context *context, IW
     }
     format_lookup[] =
     {
-        {&GUID_WICPixelFormat32bppPBGRA, {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED}},
-        {&GUID_WICPixelFormat32bppPRGBA, {DXGI_FORMAT_R8G8B8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED}},
-        {&GUID_WICPixelFormat32bppBGR,   {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE}},
-        {&GUID_WICPixelFormat32bppRGB,   {DXGI_FORMAT_R8G8B8A8_UNORM, D2D1_ALPHA_MODE_IGNORE}},
+        {&GUID_WICPixelFormat32bppPBGRA,      {DXGI_FORMAT_B8G8R8A8_UNORM,     D2D1_ALPHA_MODE_PREMULTIPLIED}},
+        {&GUID_WICPixelFormat32bppPRGBA,      {DXGI_FORMAT_R8G8B8A8_UNORM,     D2D1_ALPHA_MODE_PREMULTIPLIED}},
+        {&GUID_WICPixelFormat32bppBGR,        {DXGI_FORMAT_B8G8R8A8_UNORM,     D2D1_ALPHA_MODE_IGNORE}},
+        {&GUID_WICPixelFormat32bppRGB,        {DXGI_FORMAT_R8G8B8A8_UNORM,     D2D1_ALPHA_MODE_IGNORE}},
+        {&GUID_WICPixelFormat8bppAlpha,       {DXGI_FORMAT_A8_UNORM,           D2D1_ALPHA_MODE_PREMULTIPLIED}},
+        {&GUID_WICPixelFormat64bppPRGBAHalf,  {DXGI_FORMAT_R16G16B16A16_FLOAT, D2D1_ALPHA_MODE_PREMULTIPLIED}},
+        {&GUID_WICPixelFormat64bppPRGBA,      {DXGI_FORMAT_R16G16B16A16_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED}},
+        {&GUID_WICPixelFormat128bppPRGBAFloat,{DXGI_FORMAT_R32G32B32A32_FLOAT, D2D1_ALPHA_MODE_PREMULTIPLIED}},
     };
+    const D2D1_PIXEL_FORMAT *d2d_format = NULL;
+    unsigned int i;
 
-    if (FAILED(hr = IWICBitmapSource_GetSize(bitmap_source, &size.width, &size.height)))
+    for (i = 0; i < ARRAY_SIZE(format_lookup); ++i)
     {
-        WARN("Failed to get bitmap size, hr %#lx.\n", hr);
-        return hr;
-    }
-
-    if (!desc)
-    {
-        bitmap_desc.pixelFormat.format = DXGI_FORMAT_UNKNOWN;
-        bitmap_desc.pixelFormat.alphaMode = D2D1_ALPHA_MODE_UNKNOWN;
-        bitmap_desc.dpiX = 0.0f;
-        bitmap_desc.dpiY = 0.0f;
-        bitmap_desc.bitmapOptions = 0;
-        bitmap_desc.colorContext = NULL;
-    }
-    else
-    {
-        bitmap_desc = *desc;
-    }
-
-    if (FAILED(hr = IWICBitmapSource_GetPixelFormat(bitmap_source, &wic_format)))
-    {
-        WARN("Failed to get bitmap format, hr %#lx.\n", hr);
-        return hr;
-    }
-
-    for (i = 0, d2d_format = NULL; i < ARRAY_SIZE(format_lookup); ++i)
-    {
-        if (IsEqualGUID(&wic_format, format_lookup[i].wic))
+        if (IsEqualGUID(wic_format, format_lookup[i].wic))
         {
             d2d_format = &format_lookup[i].d2d;
             break;
@@ -748,26 +722,141 @@ HRESULT d2d_bitmap_create_from_wic_bitmap(struct d2d_device_context *context, IW
 
     if (!d2d_format)
     {
-        WARN("Unsupported WIC bitmap format %s.\n", debugstr_guid(&wic_format));
+        WARN("Unsupported WIC bitmap format %s.\n", debugstr_guid(wic_format));
         return D2DERR_UNSUPPORTED_PIXEL_FORMAT;
     }
 
-    if (bitmap_desc.pixelFormat.format == DXGI_FORMAT_UNKNOWN)
-        bitmap_desc.pixelFormat.format = d2d_format->format;
-    if (bitmap_desc.pixelFormat.alphaMode == D2D1_ALPHA_MODE_UNKNOWN)
-        bitmap_desc.pixelFormat.alphaMode = d2d_format->alphaMode;
+    if (pixel_format->format == DXGI_FORMAT_UNKNOWN)
+        pixel_format->format = d2d_format->format;
+    if (pixel_format->alphaMode == D2D1_ALPHA_MODE_UNKNOWN)
+        pixel_format->alphaMode = d2d_format->alphaMode;
 
-    switch (bitmap_desc.pixelFormat.format)
+    switch (pixel_format->format)
     {
-        case DXGI_FORMAT_B8G8R8A8_UNORM:
-        case DXGI_FORMAT_R8G8B8A8_UNORM:
-            bpp = 4;
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+            *bpp = 16;
             break;
-
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_UNORM:
+            *bpp = 8;
+            break;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            *bpp = 4;
+            break;
+        case DXGI_FORMAT_A8_UNORM:
+            *bpp = 1;
+            break;
         default:
-            FIXME("Unhandled format %#x.\n", bitmap_desc.pixelFormat.format);
+            FIXME("Unhandled format %#x.\n", pixel_format->format);
             return D2DERR_UNSUPPORTED_PIXEL_FORMAT;
     }
+
+    return S_OK;
+}
+
+HRESULT d2d_bitmap_create_from_wic_bitmap_lock(struct d2d_device_context *context, IWICBitmapLock *bitmap_lock,
+        const D2D1_BITMAP_PROPERTIES1 *desc, struct d2d_bitmap **bitmap)
+{
+    D2D1_BITMAP_PROPERTIES1 bitmap_desc;
+    WICPixelFormatGUID wic_format;
+    UINT32 pitch, buf_size;
+    unsigned int bpp;
+    D2D1_SIZE_U size;
+    BYTE *data = NULL;
+    HRESULT hr;
+
+    if (!bitmap_lock || !bitmap)
+        return E_INVALIDARG;
+
+    if (FAILED(hr = IWICBitmapLock_GetSize(bitmap_lock, &size.width, &size.height)))
+    {
+        WARN("Failed to get bitmap size, hr %#lx.\n", hr);
+        return hr;
+    }
+
+    if (!desc)
+        memset(&bitmap_desc, 0, sizeof(bitmap_desc));
+    else
+        bitmap_desc = *desc;
+
+    if (FAILED(hr = IWICBitmapLock_GetPixelFormat(bitmap_lock, &wic_format)))
+    {
+        WARN("Failed to get bitmap format, hr %#lx.\n", hr);
+        return hr;
+    }
+
+    if (FAILED(hr = d2d_wic_format_to_d2d(&wic_format, &bitmap_desc.pixelFormat, &bpp)))
+        return hr;
+
+    if (FAILED(hr = IWICBitmapLock_GetStride(bitmap_lock, &pitch)))
+    {
+        WARN("Failed to get bitmap stride, hr %#lx.\n", hr);
+        return hr;
+    }
+
+    if (FAILED(hr = IWICBitmapLock_GetDataPointer(bitmap_lock, &buf_size, &data)))
+    {
+        WARN("Failed to get bitmap data pointer, hr %#lx.\n", hr);
+        return hr;
+    }
+
+    if (!size.width || !size.height)
+    {
+        data = NULL;
+        pitch = 0;
+    }
+    else if (!data || pitch < (size_t)bpp * size.width
+            || buf_size < (size_t)(size.height - 1) * pitch + (size_t)bpp * size.width)
+    {
+        WARN("Invalid lock buffer size %u, pitch %u for %ux%u (bpp %u).\n",
+                buf_size, pitch, size.width, size.height, bpp);
+        return E_INVALIDARG;
+    }
+
+    if (SUCCEEDED(hr = d2d_bitmap_create(context, size, data, pitch, &bitmap_desc, bitmap)))
+    {
+        (*bitmap)->wic_lock = bitmap_lock;
+        IWICBitmapLock_AddRef(bitmap_lock);
+    }
+
+    return hr;
+}
+
+HRESULT d2d_bitmap_create_from_wic_bitmap(struct d2d_device_context *context, IWICBitmapSource *bitmap_source,
+        const D2D1_BITMAP_PROPERTIES1 *desc, struct d2d_bitmap **bitmap)
+{
+    D2D1_BITMAP_PROPERTIES1 bitmap_desc;
+    WICPixelFormatGUID wic_format;
+    unsigned int bpp, data_size;
+    D2D1_SIZE_U size;
+    WICRect rect;
+    UINT32 pitch;
+    HRESULT hr;
+    void *data;
+
+    if (FAILED(hr = IWICBitmapSource_GetSize(bitmap_source, &size.width, &size.height)))
+    {
+        WARN("Failed to get bitmap size, hr %#lx.\n", hr);
+        return hr;
+    }
+
+    if (!desc)
+        memset(&bitmap_desc, 0, sizeof(bitmap_desc));
+    else
+        bitmap_desc = *desc;
+
+    if (FAILED(hr = IWICBitmapSource_GetPixelFormat(bitmap_source, &wic_format)))
+    {
+        WARN("Failed to get bitmap format, hr %#lx.\n", hr);
+        return hr;
+    }
+
+    if (FAILED(hr = d2d_wic_format_to_d2d(&wic_format, &bitmap_desc.pixelFormat, &bpp)))
+        return hr;
 
     pitch = ((bpp * size.width) + 15) & ~15;
     if (pitch / bpp < size.width)

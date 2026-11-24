@@ -309,6 +309,33 @@ static void STDMETHODCALLTYPE d2d_command_list_GetFactory(ID2D1CommandList *ifac
     ID2D1Factory_AddRef(*factory = command_list->factory);
 }
 
+static void d2d_command_decode_glyph_run(const struct d2d_command_draw_glyph_run *c,
+        DWRITE_GLYPH_RUN *run, DWRITE_GLYPH_RUN_DESCRIPTION *run_desc)
+{
+    const BYTE *data = (const BYTE *)c;
+
+    run->fontFace = c->run.fontFace;
+    run->fontEmSize = c->run.fontEmSize;
+    run->glyphCount = c->run.glyphCount;
+    run->isSideways = c->run.isSideways;
+    run->bidiLevel = c->run.bidiLevel;
+    run->glyphIndices = d2d_command_list_get_field(data, c->run.glyphIndices);
+    run->glyphAdvances = d2d_command_list_get_field(data, c->run.glyphAdvances);
+    run->glyphOffsets = d2d_command_list_get_field(data, c->run.glyphOffsets);
+
+    if (c->run_desc)
+    {
+        const struct d2d_command_draw_glyph_run_description *desc;
+
+        desc = d2d_command_list_get_field(data, c->run_desc);
+        run_desc->localeName = d2d_command_list_get_field(data, desc->localeName);
+        run_desc->string = d2d_command_list_get_field(data, desc->string);
+        run_desc->stringLength = desc->stringLength;
+        run_desc->clusterMap = d2d_command_list_get_field(data, desc->clusterMap);
+        run_desc->textPosition = desc->textPosition;
+    }
+}
+
 static HRESULT STDMETHODCALLTYPE d2d_command_list_Stream(ID2D1CommandList *iface, ID2D1CommandSink *sink)
 {
     struct d2d_command_list *command_list = impl_from_ID2D1CommandList(iface);
@@ -415,27 +442,7 @@ static HRESULT STDMETHODCALLTYPE d2d_command_list_Stream(ID2D1CommandList *iface
                 DWRITE_GLYPH_RUN_DESCRIPTION run_desc;
                 DWRITE_GLYPH_RUN run;
 
-                run.fontFace = c->run.fontFace;
-                run.fontEmSize = c->run.fontEmSize;
-                run.glyphCount = c->run.glyphCount;
-                run.isSideways = c->run.isSideways;
-                run.bidiLevel = c->run.bidiLevel;
-                run.glyphIndices = d2d_command_list_get_field(data, c->run.glyphIndices);
-                run.glyphAdvances = d2d_command_list_get_field(data, c->run.glyphAdvances);
-                run.glyphOffsets = d2d_command_list_get_field(data, c->run.glyphOffsets);
-
-                if (c->run_desc)
-                {
-                    const struct d2d_command_draw_glyph_run_description *desc;
-
-                    desc = d2d_command_list_get_field(data, c->run_desc);
-                    run_desc.localeName = d2d_command_list_get_field(data, desc->localeName);
-                    run_desc.string = d2d_command_list_get_field(data, desc->string);
-                    run_desc.stringLength = desc->stringLength;
-                    run_desc.clusterMap = d2d_command_list_get_field(data, desc->clusterMap);
-                    run_desc.textPosition = desc->textPosition;
-                }
-
+                d2d_command_decode_glyph_run(c, &run, &run_desc);
                 hr = ID2D1CommandSink_DrawGlyphRun(sink, c->origin, &run,
                         c->run_desc ? &run_desc : NULL, c->brush, c->measuring_mode);
                 break;
@@ -567,9 +574,10 @@ static HRESULT STDMETHODCALLTYPE d2d_command_list_Close(ID2D1CommandList *iface)
 {
     struct d2d_command_list *command_list = impl_from_ID2D1CommandList(iface);
 
-    FIXME("iface %p stub.\n", iface);
+    TRACE("iface %p.\n", iface);
 
-    if (command_list->state != D2D_COMMAND_LIST_STATE_OPEN)
+    if (command_list->state != D2D_COMMAND_LIST_STATE_OPEN
+            && command_list->state != D2D_COMMAND_LIST_STATE_INITIAL)
         return D2DERR_WRONG_STATE;
 
     command_list->state = D2D_COMMAND_LIST_STATE_CLOSED;
@@ -670,7 +678,7 @@ static bool d2d_command_list_create_brush(struct d2d_command_list *command_list,
             linear_properties.startPoint = brush->u.linear.start;
             linear_properties.endPoint = brush->u.linear.end;
             hr = ID2D1DeviceContext_CreateLinearGradientBrush(context, &linear_properties,
-                    &properties, &brush->u.linear.gradient->ID2D1GradientStopCollection_iface,
+                    &properties, (ID2D1GradientStopCollection *)&brush->u.linear.gradient->ID2D1GradientStopCollection1_iface,
                     (ID2D1LinearGradientBrush **)ret);
             break;
         case D2D_BRUSH_TYPE_RADIAL:
@@ -679,7 +687,7 @@ static bool d2d_command_list_create_brush(struct d2d_command_list *command_list,
             radial_properties.radiusX = brush->u.radial.radius.x;
             radial_properties.radiusY = brush->u.radial.radius.y;
             hr = ID2D1DeviceContext_CreateRadialGradientBrush(context, &radial_properties,
-                    &properties, &brush->u.radial.gradient->ID2D1GradientStopCollection_iface,
+                    &properties, (ID2D1GradientStopCollection *)&brush->u.radial.gradient->ID2D1GradientStopCollection1_iface,
                     (ID2D1RadialGradientBrush **)ret);
             break;
         case D2D_BRUSH_TYPE_BITMAP:
@@ -1242,4 +1250,212 @@ void d2d_command_list_fill_opacity_mask(struct d2d_command_list *command_list, c
         command->dst_rect = d2d_command_list_write_field(data, &offset, dst_rect, sizeof(*dst_rect));
         command->src_rect = d2d_command_list_write_field(data, &offset, src_rect, sizeof(*src_rect));
     }
+}
+
+static void d2d_command_list_draw_command(struct d2d_device_context *context, const struct d2d_command *command,
+        const D2D1_MATRIX_3X2_F *base_transform)
+{
+    ID2D1DeviceContext6 *dc = &context->ID2D1DeviceContext6_iface;
+    const BYTE *data = (const BYTE *)command;
+
+    switch (command->op)
+    {
+        case D2D_COMMAND_SET_ANTIALIAS_MODE:
+        {
+            const struct d2d_command_set_antialias_mode *c = (const void *)data;
+            ID2D1DeviceContext6_SetAntialiasMode(dc, c->mode);
+            break;
+        }
+        case D2D_COMMAND_SET_TAGS:
+        {
+            const struct d2d_command_set_tags *c = (const void *)data;
+            ID2D1DeviceContext6_SetTags(dc, c->tag1, c->tag2);
+            break;
+        }
+        case D2D_COMMAND_SET_TEXT_ANTIALIAS_MODE:
+        {
+            const struct d2d_command_set_text_antialias_mode *c = (const void *)data;
+            ID2D1DeviceContext6_SetTextAntialiasMode(dc, c->mode);
+            break;
+        }
+        case D2D_COMMAND_SET_TEXT_RENDERING_PARAMS:
+        {
+            const struct d2d_command_set_text_rendering_params *c = (const void *)data;
+            ID2D1DeviceContext6_SetTextRenderingParams(dc, c->params);
+            break;
+        }
+        case D2D_COMMAND_SET_TRANSFORM:
+        {
+            const struct d2d_command_set_transform *c = (const void *)data;
+            D2D1_MATRIX_3X2_F transform = c->transform;
+
+            if (base_transform)
+                d2d_matrix_multiply(&transform, base_transform);
+            ID2D1DeviceContext6_SetTransform(dc, &transform);
+            break;
+        }
+        case D2D_COMMAND_SET_PRIMITIVE_BLEND:
+        {
+            const struct d2d_command_set_primitive_blend *c = (const void *)data;
+            ID2D1DeviceContext6_SetPrimitiveBlend(dc, c->primitive_blend);
+            break;
+        }
+        case D2D_COMMAND_SET_UNIT_MODE:
+        {
+            const struct d2d_command_set_unit_mode *c = (const void *)data;
+            ID2D1DeviceContext6_SetUnitMode(dc, c->mode);
+            break;
+        }
+        case D2D_COMMAND_CLEAR:
+        {
+            const struct d2d_command_clear *c = (const void *)data;
+            ID2D1DeviceContext6_Clear(dc, &c->color);
+            break;
+        }
+        case D2D_COMMAND_DRAW_GLYPH_RUN:
+        {
+            const struct d2d_command_draw_glyph_run *c = (const void *)data;
+            DWRITE_GLYPH_RUN_DESCRIPTION run_desc;
+            DWRITE_GLYPH_RUN run;
+
+            d2d_command_decode_glyph_run(c, &run, &run_desc);
+            ID2D1DeviceContext6_DrawGlyphRun(dc, c->origin, &run,
+                    c->run_desc ? &run_desc : NULL, c->brush, c->measuring_mode);
+            break;
+        }
+        case D2D_COMMAND_DRAW_LINE:
+        {
+            const struct d2d_command_draw_line *c = (const void *)data;
+            ID2D1DeviceContext6_DrawLine(dc, c->p0, c->p1, c->brush, c->stroke_width, c->stroke_style);
+            break;
+        }
+        case D2D_COMMAND_DRAW_GEOMETRY:
+        {
+            const struct d2d_command_draw_geometry *c = (const void *)data;
+            ID2D1DeviceContext6_DrawGeometry(dc, c->geometry, c->brush, c->stroke_width, c->stroke_style);
+            break;
+        }
+        case D2D_COMMAND_DRAW_RECTANGLE:
+        {
+            const struct d2d_command_draw_rectangle *c = (const void *)data;
+            ID2D1DeviceContext6_DrawRectangle(dc, &c->rect, c->brush, c->stroke_width, c->stroke_style);
+            break;
+        }
+        case D2D_COMMAND_DRAW_BITMAP:
+        {
+            const struct d2d_command_draw_bitmap *c = (const void *)data;
+            const D2D1_MATRIX_4X4_F *perspective_transform;
+            const D2D1_RECT_F *dst_rect, *src_rect;
+
+            dst_rect = d2d_command_list_get_field(data, c->dst_rect);
+            src_rect = d2d_command_list_get_field(data, c->src_rect);
+            perspective_transform = d2d_command_list_get_field(data, c->perspective_transform);
+            ID2D1DeviceContext6_DrawBitmap(dc, c->bitmap, dst_rect, c->opacity,
+                    c->interpolation_mode, src_rect, perspective_transform);
+            break;
+        }
+        case D2D_COMMAND_DRAW_IMAGE:
+        {
+            const struct d2d_command_draw_image *c = (const void *)data;
+            const D2D1_POINT_2F *target_offset;
+            const D2D1_RECT_F *image_rect;
+
+            target_offset = d2d_command_list_get_field(data, c->target_offset);
+            image_rect = d2d_command_list_get_field(data, c->image_rect);
+            ID2D1DeviceContext6_DrawImage(dc, c->image, target_offset, image_rect,
+                    c->interpolation_mode, c->composite_mode);
+            break;
+        }
+        case D2D_COMMAND_DRAW_SPRITE_BATCH:
+        {
+            const struct d2d_command_draw_sprite_batch *c = (const void *)data;
+            ID2D1DeviceContext6_DrawSpriteBatch(dc, c->sprite_batch, c->start_index,
+                    c->sprite_count, c->bitmap, c->interpolation_mode, c->sprite_options);
+            break;
+        }
+        case D2D_COMMAND_FILL_MESH:
+        {
+            const struct d2d_command_fill_mesh *c = (const void *)data;
+            ID2D1DeviceContext6_FillMesh(dc, c->mesh, c->brush);
+            break;
+        }
+        case D2D_COMMAND_FILL_OPACITY_MASK:
+        {
+            const struct d2d_command_fill_opacity_mask *c = (const void *)data;
+            const D2D1_RECT_F *dst_rect, *src_rect;
+
+            dst_rect = d2d_command_list_get_field(data, c->dst_rect);
+            src_rect = d2d_command_list_get_field(data, c->src_rect);
+            ID2D1DeviceContext6_FillOpacityMask(dc, c->bitmap, c->brush, dst_rect, src_rect);
+            break;
+        }
+        case D2D_COMMAND_FILL_GEOMETRY:
+        {
+            const struct d2d_command_fill_geometry *c = (const void *)data;
+            ID2D1DeviceContext6_FillGeometry(dc, c->geometry, c->brush, c->opacity_brush);
+            break;
+        }
+        case D2D_COMMAND_FILL_RECTANGLE:
+        {
+            const struct d2d_command_fill_rectangle *c = (const void *)data;
+            ID2D1DeviceContext6_FillRectangle(dc, &c->rect, c->brush);
+            break;
+        }
+        case D2D_COMMAND_PUSH_CLIP:
+        {
+            const struct d2d_command_push_clip *c = (const void *)data;
+            ID2D1DeviceContext6_PushAxisAlignedClip(dc, &c->rect, c->mode);
+            break;
+        }
+        case D2D_COMMAND_PUSH_LAYER:
+        {
+            const struct d2d_command_push_layer *c = (const void *)data;
+            ID2D1DeviceContext6_PushLayer(dc, &c->params, NULL);
+            break;
+        }
+        case D2D_COMMAND_POP_CLIP:
+            ID2D1DeviceContext6_PopAxisAlignedClip(dc);
+            break;
+        case D2D_COMMAND_POP_LAYER:
+            ID2D1DeviceContext6_PopLayer(dc);
+            break;
+        default:
+            FIXME("Unhandled command %u.\n", command->op);
+            break;
+    }
+}
+
+void d2d_command_list_draw(ID2D1CommandList *iface, struct d2d_device_context *context)
+{
+    struct d2d_command_list *command_list = impl_from_ID2D1CommandList(iface);
+    IDWriteRenderingParams *saved_text_rendering_params;
+    D2D1_DRAWING_STATE_DESCRIPTION1 saved_state;
+    D2D1_MATRIX_3X2_F base_transform;
+    const void *data, *end;
+
+    TRACE("iface %p, context %p.\n", iface, context);
+
+    if (command_list->state != D2D_COMMAND_LIST_STATE_CLOSED)
+        return;
+
+    saved_state = context->drawing_state;
+    base_transform = context->drawing_state.transform;
+    saved_text_rendering_params = context->text_rendering_params;
+    if (saved_text_rendering_params)
+        IDWriteRenderingParams_AddRef(saved_text_rendering_params);
+
+    data = command_list->data;
+    end = (char *)command_list->data + command_list->size;
+    while (data < end)
+    {
+        const struct d2d_command *command = data;
+
+        d2d_command_list_draw_command(context, command, &base_transform);
+        data = (char *)data + command->size;
+    }
+
+    context->drawing_state = saved_state;
+    if (context->text_rendering_params)
+        IDWriteRenderingParams_Release(context->text_rendering_params);
+    context->text_rendering_params = saved_text_rendering_params;
 }

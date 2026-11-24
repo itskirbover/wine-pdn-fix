@@ -53,6 +53,18 @@ static BOOL WINAPI d2d_factory_builtins_initonce(INIT_ONCE *once, void *param, v
     return TRUE;
 }
 
+static inline void d2d_factory_lock(struct d2d_factory *factory)
+{
+    if (factory->factory_type == D2D1_FACTORY_TYPE_MULTI_THREADED)
+        EnterCriticalSection(&factory->cs);
+}
+
+static inline void d2d_factory_unlock(struct d2d_factory *factory)
+{
+    if (factory->factory_type == D2D1_FACTORY_TYPE_MULTI_THREADED)
+        LeaveCriticalSection(&factory->cs);
+}
+
 static void d2d_factory_init_builtin_effects(struct d2d_factory *factory)
 {
     InitOnceExecuteOnce(&factory->init_builtins, d2d_factory_builtins_initonce, factory, NULL);
@@ -63,6 +75,97 @@ void d2d_factory_register_effect(struct d2d_factory *factory, struct d2d_effect_
     list_add_tail(&factory->effects, &effect->entry);
 }
 
+static struct d2d_effect_registration * d2d_factory_get_registered_effect_locked(
+        struct d2d_factory *factory, const GUID *id)
+{
+    struct d2d_effect_registration *reg;
+
+    LIST_FOR_EACH_ENTRY(reg, &factory->effects, struct d2d_effect_registration, entry)
+    {
+        if (IsEqualGUID(id, &reg->id))
+            return reg;
+    }
+
+    return NULL;
+}
+
+static BOOL d2d_factory_is_fallback_builtin_effect(const GUID *id)
+{
+    static const CLSID * const fallback_clsids[] =
+    {
+        &CLSID_D2D1Atlas,
+        &CLSID_D2D1BitmapSource,
+        &CLSID_D2D1Border,
+        &CLSID_D2D1ConvolveMatrix,
+        &CLSID_D2D1DiscreteTransfer,
+        &CLSID_D2D1DisplacementMap,
+        &CLSID_D2D1DistantDiffuse,
+        &CLSID_D2D1DistantSpecular,
+        &CLSID_D2D1DpiCompensation,
+        &CLSID_D2D1GammaTransfer,
+        &CLSID_D2D1LinearTransfer,
+        &CLSID_D2D1LuminanceToAlpha,
+        &CLSID_D2D1Morphology,
+        &CLSID_D2D1OpacityMetadata,
+        &CLSID_D2D1PointDiffuse,
+        &CLSID_D2D1SpotDiffuse,
+        &CLSID_D2D1SpotSpecular,
+        &CLSID_D2D1TableTransfer,
+        &CLSID_D2D1Tile,
+        &CLSID_D2D1Turbulence,
+        &CLSID_D2D1UnPremultiply,
+        &CLSID_D2D1YCbCr,
+        &CLSID_D2D1Contrast,
+        &CLSID_D2D1RgbToHue,
+        &CLSID_D2D1HueToRgb,
+        &CLSID_D2D1ChromaKey,
+        &CLSID_D2D1Emboss,
+        &CLSID_D2D1Exposure,
+        &CLSID_D2D1Invert,
+        &CLSID_D2D1Posterize,
+        &CLSID_D2D1Sepia,
+        &CLSID_D2D1Sharpen,
+        &CLSID_D2D1Straighten,
+        &CLSID_D2D1TemperatureTint,
+        &CLSID_D2D1Vignette,
+        &CLSID_D2D1EdgeDetection,
+        &CLSID_D2D1HighlightsShadows,
+        &CLSID_D2D1LookupTable3D,
+        &CLSID_D2D1Opacity,
+        &CLSID_D2D1AlphaMask,
+        &CLSID_D2D1CrossFade,
+        &CLSID_D2D1Tint,
+        &CLSID_D2D1WhiteLevelAdjustment,
+        &CLSID_D2D1HdrToneMap,
+    };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(fallback_clsids); ++i)
+    {
+        if (IsEqualGUID(id, fallback_clsids[i]))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static struct d2d_effect_registration * d2d_factory_lookup_effect_locked(
+        struct d2d_factory *factory, const GUID *id, bool allow_fallback)
+{
+    struct d2d_effect_registration *reg;
+
+    if ((reg = d2d_factory_get_registered_effect_locked(factory, id)))
+        return reg;
+
+    if (allow_fallback && d2d_factory_is_fallback_builtin_effect(id))
+    {
+        FIXME("Builtin effect %s not implemented, falling back to CLSID_D2D1Blend.\n", debugstr_guid(id));
+        return d2d_factory_get_registered_effect_locked(factory, &CLSID_D2D1Blend);
+    }
+
+    return NULL;
+}
+
 struct d2d_effect_registration * d2d_factory_get_registered_effect(ID2D1Factory *iface,
         const GUID *id)
 {
@@ -71,30 +174,52 @@ struct d2d_effect_registration * d2d_factory_get_registered_effect(ID2D1Factory 
 
     d2d_factory_init_builtin_effects(factory);
 
-    LIST_FOR_EACH_ENTRY(reg, &factory->effects, struct d2d_effect_registration, entry)
-    {
-        if (IsEqualGUID(id, &reg->id)) return reg;
-    }
+    d2d_factory_lock(factory);
+    reg = d2d_factory_lookup_effect_locked(factory, id, false);
+    d2d_factory_unlock(factory);
 
-    return NULL;
+    return reg;
+}
+
+struct d2d_effect_registration * d2d_factory_get_registered_effect_or_fallback(ID2D1Factory *iface,
+        const GUID *id)
+{
+    struct d2d_factory *factory = unsafe_impl_from_ID2D1Factory(iface);
+    struct d2d_effect_registration *reg;
+
+    d2d_factory_init_builtin_effects(factory);
+
+    d2d_factory_lock(factory);
+    reg = d2d_factory_lookup_effect_locked(factory, id, true);
+    d2d_factory_unlock(factory);
+
+    return reg;
 }
 
 static HRESULT d2d_factory_reload_sysmetrics(struct d2d_factory *factory)
 {
+    float dpi_x, dpi_y;
+    HRESULT hr = S_OK;
     HDC hdc;
 
     if (!(hdc = GetDC(NULL)))
     {
-        factory->dpi_x = factory->dpi_y = 96.0f;
-        return E_FAIL;
+        dpi_x = dpi_y = 96.0f;
+        hr = E_FAIL;
+    }
+    else
+    {
+        dpi_x = GetDeviceCaps(hdc, LOGPIXELSX);
+        dpi_y = GetDeviceCaps(hdc, LOGPIXELSY);
+        ReleaseDC(NULL, hdc);
     }
 
-    factory->dpi_x = GetDeviceCaps(hdc, LOGPIXELSX);
-    factory->dpi_y = GetDeviceCaps(hdc, LOGPIXELSY);
+    d2d_factory_lock(factory);
+    factory->dpi_x = dpi_x;
+    factory->dpi_y = dpi_y;
+    d2d_factory_unlock(factory);
 
-    ReleaseDC(NULL, hdc);
-
-    return S_OK;
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_factory_QueryInterface(ID2D1Factory7 *iface, REFIID iid, void **out)
@@ -178,8 +303,10 @@ static void STDMETHODCALLTYPE d2d_factory_GetDesktopDpi(ID2D1Factory7 *iface, fl
 
     TRACE("iface %p, dpi_x %p, dpi_y %p.\n", iface, dpi_x, dpi_y);
 
+    d2d_factory_lock(factory);
     *dpi_x = factory->dpi_x;
     *dpi_y = factory->dpi_y;
+    d2d_factory_unlock(factory);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_factory_CreateRectangleGeometry(ID2D1Factory7 *iface,
@@ -385,11 +512,14 @@ static HRESULT d2d_factory_get_device(struct d2d_factory *factory, ID3D10Device1
 {
     HRESULT hr = S_OK;
 
+    d2d_factory_lock(factory);
     if (!factory->device && FAILED(hr = D3D10CreateDevice1(NULL, D3D10_DRIVER_TYPE_HARDWARE, NULL, D3D10_CREATE_DEVICE_BGRA_SUPPORT,
             D3D10_FEATURE_LEVEL_10_0, D3D10_1_SDK_VERSION, &factory->device)))
         WARN("Failed to create device, hr %#lx.\n", hr);
 
     *device = factory->device;
+    d2d_factory_unlock(factory);
+
     return hr;
 }
 
@@ -956,6 +1086,33 @@ static HRESULT parse_effect_xml(IXmlReader *reader, struct d2d_effect_registrati
     return hr;
 }
 
+static struct d2d_effect_registration * d2d_factory_find_effect_rev(struct d2d_factory *factory,
+        REFCLSID effect_id)
+{
+    struct d2d_effect_registration *effect;
+
+    LIST_FOR_EACH_ENTRY_REV(effect, &factory->effects, struct d2d_effect_registration, entry)
+    {
+        if (IsEqualGUID(effect_id, &effect->id))
+            return effect;
+    }
+
+    return NULL;
+}
+
+static bool d2d_factory_try_ref_existing_effect(struct d2d_factory *factory, REFCLSID effect_id, HRESULT *hr)
+{
+    struct d2d_effect_registration *effect;
+
+    if (!(effect = d2d_factory_find_effect_rev(factory, effect_id)))
+        return false;
+
+    *hr = effect->builtin ? E_INVALIDARG : S_OK;
+    if (!effect->builtin)
+        ++effect->registration_count;
+    return true;
+}
+
 static HRESULT d2d_factory_register_effect_from_stream(struct d2d_factory *factory,
         REFCLSID effect_id, IStream *property_xml, const D2D1_PROPERTY_BINDING *bindings,
         UINT32 binding_count, PD2D1_EFFECT_FACTORY effect_factory, BOOL builtin)
@@ -965,14 +1122,15 @@ static HRESULT d2d_factory_register_effect_from_stream(struct d2d_factory *facto
     unsigned int i;
     HRESULT hr;
 
-    LIST_FOR_EACH_ENTRY_REV(effect, &factory->effects, struct d2d_effect_registration, entry)
+    if (!builtin)
     {
-        if (IsEqualGUID(effect_id, &effect->id))
+        d2d_factory_lock(factory);
+        if (d2d_factory_try_ref_existing_effect(factory, effect_id, &hr))
         {
-            if (effect->builtin) return E_INVALIDARG;
-            ++effect->registration_count;
-            return S_OK;
+            d2d_factory_unlock(factory);
+            return hr;
         }
+        d2d_factory_unlock(factory);
     }
 
     if (FAILED(hr = CreateXmlReader(&IID_IXmlReader, (void **)&reader, NULL)))
@@ -1039,7 +1197,21 @@ static HRESULT d2d_factory_register_effect_from_stream(struct d2d_factory *facto
     effect->id = *effect_id;
     effect->factory = effect_factory;
 
+    if (builtin)
+    {
+        d2d_factory_register_effect(factory, effect);
+        return S_OK;
+    }
+
+    d2d_factory_lock(factory);
+    if (d2d_factory_try_ref_existing_effect(factory, effect_id, &hr))
+    {
+        d2d_factory_unlock(factory);
+        d2d_effect_registration_cleanup(effect);
+        return hr;
+    }
     d2d_factory_register_effect(factory, effect);
+    d2d_factory_unlock(factory);
 
     return S_OK;
 }
@@ -1110,26 +1282,25 @@ static HRESULT STDMETHODCALLTYPE d2d_factory_UnregisterEffect(ID2D1Factory7 *ifa
 {
     struct d2d_factory *factory = impl_from_ID2D1Factory7(iface);
     struct d2d_effect_registration *effect;
+    HRESULT hr = D2DERR_EFFECT_IS_NOT_REGISTERED;
 
     TRACE("iface %p, effect_id %s.\n", iface, debugstr_guid(effect_id));
 
     d2d_factory_init_builtin_effects(factory);
 
-    LIST_FOR_EACH_ENTRY_REV(effect, &factory->effects, struct d2d_effect_registration, entry)
+    d2d_factory_lock(factory);
+    if ((effect = d2d_factory_find_effect_rev(factory, effect_id)) && !effect->builtin)
     {
-        if (IsEqualGUID(effect_id, &effect->id))
+        if (!--effect->registration_count)
         {
-            if (effect->builtin) break;
-            if (!--effect->registration_count)
-            {
-                list_remove(&effect->entry);
-                d2d_effect_registration_cleanup(effect);
-            }
-            return S_OK;
+            list_remove(&effect->entry);
+            d2d_effect_registration_cleanup(effect);
         }
+        hr = S_OK;
     }
+    d2d_factory_unlock(factory);
 
-    return D2DERR_EFFECT_IS_NOT_REGISTERED;
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_factory_GetRegisteredEffects(ID2D1Factory7 *iface,
@@ -1150,6 +1321,7 @@ static HRESULT STDMETHODCALLTYPE d2d_factory_GetRegisteredEffects(ID2D1Factory7 
 
     d2d_factory_init_builtin_effects(factory);
 
+    d2d_factory_lock(factory);
     LIST_FOR_EACH_ENTRY(effect, &factory->effects, struct d2d_effect_registration, entry)
     {
         if (effects && effect_count)
@@ -1162,6 +1334,7 @@ static HRESULT STDMETHODCALLTYPE d2d_factory_GetRegisteredEffects(ID2D1Factory7 
 
         *registered += 1;
     }
+    d2d_factory_unlock(factory);
 
     if (!effects) return S_OK;
     return *returned == *registered ? S_OK : D2DERR_INSUFFICIENT_BUFFER;
@@ -1175,16 +1348,22 @@ static HRESULT STDMETHODCALLTYPE d2d_factory_GetEffectProperties(ID2D1Factory7 *
 
     TRACE("iface %p, effect_id %s, props %p.\n", iface, debugstr_guid(effect_id), props);
 
+    if (!props)
+        return E_INVALIDARG;
+
     d2d_factory_init_builtin_effects(factory);
 
-    if (!(reg = d2d_factory_get_registered_effect((ID2D1Factory *)iface, effect_id)))
+    d2d_factory_lock(factory);
+    if (!(reg = d2d_factory_lookup_effect_locked(factory, effect_id, true)))
     {
+        d2d_factory_unlock(factory);
         WARN("Effect id %s not found.\n", wine_dbgstr_guid(effect_id));
         return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
     }
 
     *props = &reg->properties->ID2D1Properties_iface;
     ID2D1Properties_AddRef(*props);
+    d2d_factory_unlock(factory);
 
     return S_OK;
 }
@@ -1359,9 +1538,9 @@ static void d2d_factory_init(struct d2d_factory *factory, D2D1_FACTORY_TYPE fact
             &d2d_factory_multithread_noop_vtbl : &d2d_factory_multithread_vtbl;
     factory->factory_type = factory_type;
     factory->refcount = 1;
+    InitializeCriticalSection(&factory->cs);
     d2d_factory_reload_sysmetrics(factory);
     list_init(&factory->effects);
-    InitializeCriticalSection(&factory->cs);
     InitOnceInitialize(&factory->init_builtins);
 }
 
