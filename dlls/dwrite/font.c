@@ -21,6 +21,7 @@
  */
 
 #include <assert.h>
+#include <limits.h>
 #include <math.h>
 
 #define COBJMACROS
@@ -5819,6 +5820,37 @@ static ULONG WINAPI glyphrunanalysis_Release(IDWriteGlyphRunAnalysis *iface)
     return refcount;
 }
 
+static INT clamp_float_to_int(FLOAT val)
+{
+    if (!(val == val))
+        return 0;
+    if (val >= 2147483648.0f)
+        return INT_MAX;
+    if (val <= -2147483648.0f)
+        return INT_MIN;
+    return (INT)val;
+}
+
+static void add_safe(LONG *pos, INT value)
+{
+    LONGLONG result = (LONGLONG)*pos + value;
+
+    if (result > LONG_MAX)
+        *pos = LONG_MAX;
+    else if (result < LONG_MIN)
+        *pos = LONG_MIN;
+    else
+        *pos = result;
+}
+
+static void OffsetRectSafe(RECT *rect, INT x, INT y)
+{
+    add_safe(&rect->left, x);
+    add_safe(&rect->right, x);
+    add_safe(&rect->top, y);
+    add_safe(&rect->bottom, y);
+}
+
 static void glyphrunanalysis_get_texturebounds(struct dwrite_glyphrunanalysis *analysis, RECT *bounds)
 {
     struct dwrite_glyphbitmap glyph_bitmap;
@@ -5850,7 +5882,8 @@ static void glyphrunanalysis_get_texturebounds(struct dwrite_glyphrunanalysis *a
         if (bitmap_size > analysis->max_glyph_bitmap_size)
             analysis->max_glyph_bitmap_size = bitmap_size;
 
-        OffsetRect(bbox, analysis->origins[i].x, analysis->origins[i].y);
+        OffsetRectSafe(bbox, clamp_float_to_int(analysis->origins[i].x),
+                clamp_float_to_int(analysis->origins[i].y));
         UnionRect(&analysis->bounds, &analysis->bounds, bbox);
     }
 
@@ -5945,7 +5978,14 @@ static HRESULT glyphrunanalysis_render(struct dwrite_glyphrunanalysis *analysis)
             continue;
         }
 
-        OffsetRect(bbox, analysis->origins[i].x, analysis->origins[i].y);
+        OffsetRectSafe(bbox, clamp_float_to_int(analysis->origins[i].x),
+                clamp_float_to_int(analysis->origins[i].y));
+        if (IsRectEmpty(bbox))
+            continue;
+        if (bbox->right - bbox->left < width)
+            width = bbox->right - bbox->left;
+        if (bbox->bottom - bbox->top < height)
+            height = bbox->bottom - bbox->top;
 
         /* blit to analysis bitmap */
         dst = get_pixel_ptr(analysis->bitmap, analysis->texture_type, bbox, &analysis->bounds);
