@@ -250,3 +250,10 @@ HRESULT WINAPI DXGIGetDebugInterface1(UINT flags, REFIID iid, void **debug)
     WARN("Returning DXGI_ERROR_SDK_COMPONENT_MISSING.\n");
     return DXGI_ERROR_SDK_COMPONENT_MISSING;
 }
+
+HRESULT WINAPI DXGIDeclareAdapterRemovalSupport(void)
+{
+    FIXME("stub!\n");
+
+    return S_OK;
+}
