@@ -81,6 +81,55 @@ void fill_rect( HDC dc, const RECT *rect, HBRUSH hbrush )
     if (prev_brush) NtGdiSelectBrush( dc, prev_brush );
 }
 
+static void fill_solid_rect( HDC hdc, const RECT *rect, COLORREF color )
+{
+    HBRUSH brush;
+
+    if (rect->right <= rect->left || rect->bottom <= rect->top) return;
+    if (!(brush = NtGdiCreateSolidBrush( color, NULL ))) return;
+    fill_rect( hdc, rect, brush );
+    NtGdiDeleteObjectApp( brush );
+}
+
+static BOOL is_window_dark_mode( HWND hwnd )
+{
+    char buffer[offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data[sizeof(DWORD)])];
+    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+    HANDLE prop = NtUserGetProp( hwnd, L"WineDwmImmersiveDarkMode" );
+    HKEY hkey;
+    BOOL dark = FALSE;
+
+    if (prop == (HANDLE)(INT_PTR)2) return TRUE;
+    if (prop == (HANDLE)(INT_PTR)1) return FALSE;
+
+    if ((hkey = reg_open_hkcu_key( "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" )))
+    {
+        if (query_reg_value( hkey, L"AppsUseLightTheme", info, sizeof(buffer) ) == sizeof(DWORD)
+                && info->Type == REG_DWORD)
+            dark = !*(const DWORD *)info->Data;
+        NtClose( hkey );
+    }
+    return dark;
+}
+
+static void draw_flat_frame_ring( HDC hdc, const RECT *outer, const RECT *inner, COLORREF color )
+{
+    RECT strip;
+
+    /* top */
+    SetRect( &strip, outer->left, outer->top, outer->right, inner->top );
+    fill_solid_rect( hdc, &strip, color );
+    /* bottom */
+    SetRect( &strip, outer->left, inner->bottom, outer->right, outer->bottom );
+    fill_solid_rect( hdc, &strip, color );
+    /* left */
+    SetRect( &strip, outer->left, inner->top, inner->left, inner->bottom );
+    fill_solid_rect( hdc, &strip, color );
+    /* right */
+    SetRect( &strip, inner->right, inner->top, outer->right, inner->bottom );
+    fill_solid_rect( hdc, &strip, color );
+}
+
 /* see DrawFocusRect */
 static BOOL draw_focus_rect( HDC hdc, const RECT *rc )
 {
@@ -1480,11 +1529,54 @@ static void draw_close_button( HWND hwnd, HDC hdc, BOOL down, BOOL grayed )
         int bmp_height = map_user_dpi( 11, get_dpi_for_window( hwnd ) );
         int bmp_width = bmp_height;
         int caption_height = get_system_metrics( SM_CYSMCAPTION );
+        BOOL dark = is_window_dark_mode( hwnd );
+        BOOL active = FALSE;
+        WND *win;
+        COLORREF bg, fg;
+        HPEN pen, prev_pen;
+        int cx, cy, half;
 
         rect.top = rect.top + (caption_height - 1 - bmp_height) / 2;
         rect.left = rect.right - (caption_height + 1 + bmp_width) / 2;
         rect.bottom = rect.top + bmp_height;
         rect.right = rect.left + bmp_width;
+
+        if ((win = get_win_ptr( hwnd )) && win != WND_OTHER_PROCESS)
+        {
+            active = (win->flags & WIN_NCACTIVATED) != 0;
+            release_win_ptr( win );
+        }
+
+        if (down)
+            bg = RGB(0xc4, 0x2b, 0x1c);
+        else if (dark)
+            bg = active ? RGB(0x20, 0x20, 0x20) : RGB(0x2b, 0x2b, 0x2b);
+        else
+            bg = active ? RGB(0xf3, 0xf3, 0xf3) : RGB(0xea, 0xea, 0xea);
+
+        if (down)
+            fg = RGB(0xff, 0xff, 0xff);
+        else if (grayed)
+            fg = dark ? RGB(0x66, 0x66, 0x66) : RGB(0xa0, 0xa0, 0xa0);
+        else
+            fg = dark ? RGB(0xd0, 0xd0, 0xd0) : RGB(0x44, 0x44, 0x44);
+
+        fill_solid_rect( hdc, &rect, bg );
+
+        cx = (rect.left + rect.right) / 2;
+        cy = (rect.top + rect.bottom) / 2;
+        half = max( 2, (min( bmp_width, bmp_height ) - 4) / 2 );
+        if ((pen = NtGdiCreatePen( PS_SOLID, 1, fg, NULL )))
+        {
+            prev_pen = NtGdiSelectPen( hdc, pen );
+            NtGdiMoveTo( hdc, cx - half, cy - half, NULL );
+            NtGdiLineTo( hdc, cx + half + 1, cy + half + 1 );
+            NtGdiMoveTo( hdc, cx + half, cy - half, NULL );
+            NtGdiLineTo( hdc, cx - half - 1, cy + half + 1 );
+            NtGdiSelectPen( hdc, prev_pen );
+            NtGdiDeleteObjectApp( pen );
+        }
+        return;
     }
     else
     {
@@ -1557,20 +1649,35 @@ static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD  style,
     HMENU sys_menu;
     BOOL gradient = FALSE;
     UINT pen_color = COLOR_3DFACE;
+    BOOL tool_window = (ex_style & WS_EX_TOOLWINDOW) != 0;
+    BOOL dark = tool_window ? is_window_dark_mode( hwnd ) : FALSE;
     int len;
 
-    if ((ex_style & (WS_EX_STATICEDGE|WS_EX_CLIENTEDGE|WS_EX_DLGMODALFRAME)) == WS_EX_STATICEDGE)
-        pen_color = COLOR_WINDOWFRAME;
-    prev_pen = NtGdiSelectPen( hdc, get_sys_color_pen( pen_color ));
-    NtGdiMoveTo( hdc, r.left, r.bottom - 1, NULL );
-    NtGdiLineTo( hdc, r.right, r.bottom - 1 );
-    NtGdiSelectPen( hdc, prev_pen );
-    r.bottom--;
+    if (tool_window)
+    {
+        RECT sep_rc = { r.left, r.bottom - 1, r.right, r.bottom };
+        COLORREF sep_color = dark ? RGB(0x33, 0x33, 0x33) : RGB(0xe0, 0xe0, 0xe0);
+        COLORREF bg_color = dark ? (active ? RGB(0x20, 0x20, 0x20) : RGB(0x2b, 0x2b, 0x2b))
+                                 : (active ? RGB(0xf3, 0xf3, 0xf3) : RGB(0xea, 0xea, 0xea));
+        fill_solid_rect( hdc, &sep_rc, sep_color );
+        r.bottom--;
+        fill_solid_rect( hdc, &r, bg_color );
+    }
+    else
+    {
+        if ((ex_style & (WS_EX_STATICEDGE|WS_EX_CLIENTEDGE|WS_EX_DLGMODALFRAME)) == WS_EX_STATICEDGE)
+            pen_color = COLOR_WINDOWFRAME;
+        prev_pen = NtGdiSelectPen( hdc, get_sys_color_pen( pen_color ));
+        NtGdiMoveTo( hdc, r.left, r.bottom - 1, NULL );
+        NtGdiLineTo( hdc, r.right, r.bottom - 1 );
+        NtGdiSelectPen( hdc, prev_pen );
+        r.bottom--;
 
-    NtUserSystemParametersInfo( SPI_GETGRADIENTCAPTIONS, 0, &gradient, 0 );
-    draw_caption_bar( hdc, &r, style, active, gradient );
+        NtUserSystemParametersInfo( SPI_GETGRADIENTCAPTIONS, 0, &gradient, 0 );
+        draw_caption_bar( hdc, &r, style, active, gradient );
+    }
 
-    if ((style & WS_SYSMENU) && !(ex_style & WS_EX_TOOLWINDOW))
+    if ((style & WS_SYSMENU) && !tool_window)
     {
         if (draw_nc_sys_button( hwnd, hdc, FALSE ))
             r.left += get_system_metrics( SM_CXSMICON ) + 2;
@@ -1604,21 +1711,29 @@ static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD  style,
     {
         NONCLIENTMETRICSW nclm;
         HFONT hFont, hOldFont;
+        COLORREF text_color;
+
         nclm.cbSize = sizeof(nclm);
         NtUserSystemParametersInfo( SPI_GETNONCLIENTMETRICS, 0, &nclm, 0 );
-        if (ex_style & WS_EX_TOOLWINDOW)
+        if (tool_window)
+        {
+            nclm.lfSmCaptionFont.lfWeight = FW_NORMAL;
             hFont = NtGdiHfontCreate( &nclm.lfSmCaptionFont, sizeof(nclm.lfSmCaptionFont), 0, 0, NULL );
+            text_color = dark ? (active ? RGB(0xf0, 0xf0, 0xf0) : RGB(0x9e, 0x9e, 0x9e))
+                              : (active ? RGB(0x1a, 0x1a, 0x1a) : RGB(0x6e, 0x6e, 0x6e));
+            r.left += 6;
+        }
         else
+        {
             hFont = NtGdiHfontCreate( &nclm.lfCaptionFont, sizeof(nclm.lfCaptionFont), 0, 0, NULL );
+            text_color = get_sys_color( active ? COLOR_CAPTIONTEXT : COLOR_INACTIVECAPTIONTEXT );
+            r.left += 2;
+        }
         hOldFont = NtGdiSelectFont( hdc, hFont );
-        if (active)
-            NtGdiGetAndSetDCDword( hdc, NtGdiSetTextColor, get_sys_color( COLOR_CAPTIONTEXT ), NULL );
-        else
-            NtGdiGetAndSetDCDword( hdc, NtGdiSetTextColor, get_sys_color( COLOR_INACTIVECAPTIONTEXT ), NULL );
+        NtGdiGetAndSetDCDword( hdc, NtGdiSetTextColor, text_color, NULL );
         NtGdiGetAndSetDCDword( hdc, NtGdiSetBkMode, TRANSPARENT, NULL );
-        r.left += 2;
         DrawTextW( hdc, buffer, -1, &r,
-                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_LEFT );
+                     DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_LEFT | DT_END_ELLIPSIS );
         NtGdiDeleteObjectApp( NtGdiSelectFont( hdc, hOldFont ));
     }
 }
@@ -1759,14 +1874,47 @@ static void nc_paint( HWND hwnd, HRGN clip )
     get_window_rect_rel( hwnd, COORDS_WINDOW, &rect, get_thread_dpi() );
     NtGdiGetAppClipBox( hdc, &clip_rect );
 
-    NtGdiSelectPen( hdc, get_sys_color_pen( COLOR_WINDOWFRAME ));
+    if (ex_style & WS_EX_TOOLWINDOW)
+    {
+        BOOL dark = is_window_dark_mode( hwnd );
+        COLORREF border_color = dark ? RGB(0x3d, 0x3d, 0x3d) : RGB(0xc8, 0xc8, 0xc8);
+        COLORREF bg_color = dark ? RGB(0x20, 0x20, 0x20) : RGB(0xf3, 0xf3, 0xf3);
+        RECT orig_rect = rect, border_inner;
 
-    if (has_static_outer_frame( ex_style ))
-        draw_rect_edge( hdc, &rect, BDR_SUNKENOUTER, BF_RECT | BF_ADJUST, 1 );
-    else if (has_big_frame( style, ex_style ))
-        draw_rect_edge( hdc, &rect, EDGE_RAISED, BF_RECT | BF_ADJUST, 1 );
+        if (has_static_outer_frame( ex_style ))
+            InflateRect( &rect, -1, -1 );
+        else if (has_big_frame( style, ex_style ))
+            InflateRect( &rect, -2, -2 );
 
-    draw_nc_frame( hdc, &rect, active, style, ex_style );
+        if (style & WS_THICKFRAME)
+        {
+            int width  = get_system_metrics( SM_CXFRAME ) - get_system_metrics( SM_CXDLGFRAME );
+            int height = get_system_metrics( SM_CYFRAME ) - get_system_metrics( SM_CYDLGFRAME );
+            InflateRect( &rect, -width, -height );
+        }
+        if ((style & (WS_BORDER|WS_DLGFRAME)) || (ex_style & WS_EX_DLGMODALFRAME))
+        {
+            int width  = get_system_metrics( SM_CXDLGFRAME ) - get_system_metrics( SM_CXEDGE );
+            int height = get_system_metrics( SM_CYDLGFRAME ) - get_system_metrics( SM_CYEDGE );
+            InflateRect( &rect, -width, -height );
+        }
+
+        border_inner = orig_rect;
+        InflateRect( &border_inner, -1, -1 );
+        draw_flat_frame_ring( hdc, &orig_rect, &border_inner, border_color );
+        draw_flat_frame_ring( hdc, &border_inner, &rect, bg_color );
+    }
+    else
+    {
+        NtGdiSelectPen( hdc, get_sys_color_pen( COLOR_WINDOWFRAME ));
+
+        if (has_static_outer_frame( ex_style ))
+            draw_rect_edge( hdc, &rect, BDR_SUNKENOUTER, BF_RECT | BF_ADJUST, 1 );
+        else if (has_big_frame( style, ex_style ))
+            draw_rect_edge( hdc, &rect, EDGE_RAISED, BF_RECT | BF_ADJUST, 1 );
+
+        draw_nc_frame( hdc, &rect, active, style, ex_style );
+    }
 
     if ((style & WS_CAPTION) == WS_CAPTION)
     {
@@ -1802,7 +1950,19 @@ static void nc_paint( HWND hwnd, HRGN clip )
     TRACE( "rect after menu %s\n", wine_dbgstr_rect( &rect ));
 
     if (ex_style & WS_EX_CLIENTEDGE)
-        draw_rect_edge( hdc, &rect, EDGE_SUNKEN, BF_RECT | BF_ADJUST, 1 );
+    {
+        if (ex_style & WS_EX_TOOLWINDOW)
+        {
+            BOOL dark = is_window_dark_mode( hwnd );
+            RECT inner = rect;
+            InflateRect( &inner, -2, -2 );
+            draw_flat_frame_ring( hdc, &rect, &inner,
+                    dark ? RGB(0x20, 0x20, 0x20) : RGB(0xf3, 0xf3, 0xf3) );
+            rect = inner;
+        }
+        else
+            draw_rect_edge( hdc, &rect, EDGE_SUNKEN, BF_RECT | BF_ADJUST, 1 );
+    }
 
     /* Draw the scroll-bars */
     draw_nc_scrollbar( hwnd, hdc, style & WS_HSCROLL, style & WS_VSCROLL );
