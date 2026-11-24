@@ -163,6 +163,7 @@ static HRESULT d2d_wic_resolve_pixel_format(D2D1_PIXEL_FORMAT *pixel_format,
         { &GUID_WICPixelFormat32bppRGB, { DXGI_FORMAT_R8G8B8A8_UNORM, D2D1_ALPHA_MODE_IGNORE } },
         { &GUID_WICPixelFormat32bppPBGRA, { DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED } },
         { &GUID_WICPixelFormat32bppPRGBA, { DXGI_FORMAT_R8G8B8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED } },
+        { &GUID_WICPixelFormat8bppAlpha,  { DXGI_FORMAT_A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED } },
     };
 
     if (pixel_format->format != DXGI_FORMAT_UNKNOWN && pixel_format->alphaMode != D2D1_ALPHA_MODE_UNKNOWN)
@@ -226,6 +227,9 @@ HRESULT d2d_wic_render_target_init(struct d2d_wic_render_target *render_target, 
         case DXGI_FORMAT_B8G8R8A8_UNORM:
         case DXGI_FORMAT_R8G8B8A8_UNORM:
             render_target->bpp = 4;
+            break;
+        case DXGI_FORMAT_A8_UNORM:
+            render_target->bpp = 1;
             break;
 
         default:
