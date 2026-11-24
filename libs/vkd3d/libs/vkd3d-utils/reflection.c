@@ -850,7 +850,11 @@ static HRESULT STDMETHODCALLTYPE d3d12_reflection_GetMinFeatureLevel(
 {
     FIXME("iface %p, level %p stub!\n", iface, level);
 
-    return E_NOTIMPL;
+    if (!level)
+        return E_INVALIDARG;
+
+    *level = D3D_FEATURE_LEVEL_10_0;
+    return S_OK;
 }
 
 static UINT STDMETHODCALLTYPE d3d12_reflection_GetThreadGroupSize(
