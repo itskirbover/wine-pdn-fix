@@ -34,6 +34,7 @@ interface ID2D1Brush;
 interface IDWriteRenderingParams;
 interface IDWriteTextFormat;
 interface IDWriteTextLayout;
+interface IWICBitmapLock;
 interface IWICBitmapSource;
 interface IWICBitmap;
 
