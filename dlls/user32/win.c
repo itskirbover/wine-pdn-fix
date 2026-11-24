@@ -1597,6 +1597,17 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
 }
 
 /**********************************************************************
+ *              SetWindowFeedbackSetting (USER32.@)
+ */
+BOOL WINAPI SetWindowFeedbackSetting(HWND hwnd, FEEDBACK_TYPE feedback, DWORD flags,
+        UINT32 size, const void *configuration)
+{
+    FIXME("(%p, %u, %#lx, %u, %p): stub\n", hwnd, feedback, flags, size, configuration);
+    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+    return FALSE;
+}
+
+/**********************************************************************
  *              SetWindowCompositionAttribute (USER32.@)
  */
 BOOL WINAPI SetWindowCompositionAttribute(HWND hwnd, void *data)
