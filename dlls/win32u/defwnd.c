@@ -1696,7 +1696,8 @@ static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD  style,
         /* Draw a grayed close button if disabled or if SC_CLOSE is not there */
         draw_close_button( hwnd, hdc, FALSE,
                            (state & (MF_DISABLED | MF_GRAYED)) || (state == 0xFFFFFFFF) );
-        r.right -= get_system_metrics( SM_CYCAPTION ) - 1;
+        r.right -= tool_window ? (get_system_metrics( SM_CYSMCAPTION ) + 1)
+                               : (get_system_metrics( SM_CYCAPTION ) - 1);
 
         if ((style & WS_MAXIMIZEBOX) || (style & WS_MINIMIZEBOX))
         {
@@ -1723,7 +1724,7 @@ static void draw_nc_caption( HDC hdc, RECT *rect, HWND hwnd, DWORD  style,
             hFont = NtGdiHfontCreate( &nclm.lfSmCaptionFont, sizeof(nclm.lfSmCaptionFont), 0, 0, NULL );
             text_color = dark ? (active ? RGB(0xf0, 0xf0, 0xf0) : RGB(0x9e, 0x9e, 0x9e))
                               : (active ? RGB(0x1a, 0x1a, 0x1a) : RGB(0x6e, 0x6e, 0x6e));
-            r.left += 6;
+            r.left += 4;
         }
         else
         {
