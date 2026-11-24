@@ -27,6 +27,7 @@
 #include "winbase.h"
 #include "wingdi.h"
 #include "winuser.h"
+#include "winreg.h"
 #include "dwmapi.h"
 #include "wine/debug.h"
 
@@ -95,6 +96,24 @@ HRESULT WINAPI DwmInvalidateIconicBitmaps(HWND hwnd)
     return E_NOTIMPL;
 }
 
+static BOOL get_system_dark_mode(void)
+{
+    DWORD value = 1, type = 0, size = sizeof(value);
+    HKEY hkey;
+
+    if (!RegOpenKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            0, KEY_QUERY_VALUE, &hkey))
+    {
+        if (RegQueryValueExW(hkey, L"AppsUseLightTheme", NULL, &type, (BYTE *)&value, &size)
+                || type != REG_DWORD)
+            value = 1;
+        RegCloseKey(hkey);
+    }
+
+    return !value;
+}
+
 /**********************************************************************
  *           DwmSetWindowAttribute         (DWMAPI.@)
  */
@@ -102,9 +121,26 @@ HRESULT WINAPI DwmSetWindowAttribute(HWND hwnd, DWORD attributenum, LPCVOID attr
 {
     static BOOL once;
 
-    if (!once++) FIXME("(%p, %lx, %p, %lx) stub\n", hwnd, attributenum, attribute, size);
+    TRACE("(%p, %lx, %p, %lx)\n", hwnd, attributenum, attribute, size);
 
-    return S_OK;
+    switch (attributenum)
+    {
+    case 19: /* DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 */
+    case DWMWA_USE_IMMERSIVE_DARK_MODE:
+        if (!IsWindow(hwnd))
+            return E_HANDLE;
+        if (!attribute)
+            return E_INVALIDARG;
+        if (size < sizeof(BOOL))
+            return E_NOT_SUFFICIENT_BUFFER;
+        SetPropW(hwnd, L"WineDwmImmersiveDarkMode",
+                (HANDLE)(INT_PTR)(*(const BOOL *)attribute ? 2 : 1));
+        RedrawWindow(hwnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
+        return S_OK;
+    default:
+        if (!once++) FIXME("(%p, %lx, %p, %lx) stub\n", hwnd, attributenum, attribute, size);
+        return S_OK;
+    }
 }
 
 /**********************************************************************
@@ -215,6 +251,27 @@ HRESULT WINAPI DwmGetWindowAttribute(HWND hwnd, DWORD attribute, PVOID pv_attrib
             hr = HRESULT_FROM_WIN32(GetLastError());
 
         SetThreadDpiAwarenessContext(context);
+        break;
+    }
+    case 19: /* DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 */
+    case DWMWA_USE_IMMERSIVE_DARK_MODE:
+    {
+        HANDLE prop;
+
+        if (!pv_attribute)
+            return E_INVALIDARG;
+        if (size < sizeof(BOOL))
+            return E_NOT_SUFFICIENT_BUFFER;
+
+        prop = GetPropW(hwnd, L"WineDwmImmersiveDarkMode");
+        if (prop == (HANDLE)(INT_PTR)2)
+            *(BOOL *)pv_attribute = TRUE;
+        else if (prop == (HANDLE)(INT_PTR)1)
+            *(BOOL *)pv_attribute = FALSE;
+        else
+            *(BOOL *)pv_attribute = get_system_dark_mode();
+
+        hr = S_OK;
         break;
     }
     default:
